@@ -1,0 +1,7 @@
+bin/
+obj/
+publish/
+*.user
+.vs/
+native/libmediapipe.dll
+publish-zip/
