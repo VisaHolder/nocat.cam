@@ -42,10 +42,26 @@ public sealed class App : IDisposable
             s => { _log.Info("status: " + s); Changed?.Invoke(); });
         Keys = new Hotkeys(a => Run(a));
         Video.CameraOpened += () => { if (Cfg.fixed_exposure) ApplyExposure(true); };
+        Video.OnLearnedOther += print =>
+        {
+            Cfg.Locked(() =>
+            {
+                Cfg.not_me_faces.Add(print);
+                while (Cfg.not_me_faces.Count > 30) Cfg.not_me_faces.RemoveAt(0);
+                // a "not me" face that looks like you would be a mistake: never keep one that matches a saved you
+                Cfg.not_me_faces.RemoveAll(o => FaceId.MatchScore(o, Cfg.me_faces) >= Cfg.face_match + 0.1);
+            });
+            Cfg.Save();
+            _log.Info($"learned someone else's face ({Cfg.not_me_faces.Count} saved)");
+        };
         Video.OnRemembered += print =>
         {
             if (print == null) { Notify?.Invoke("Couldn't see a face - look at the camera and try again"); return; }
-            Cfg.Locked(() => { Cfg.me_faces.Add(print); while (Cfg.me_faces.Count > 12) Cfg.me_faces.RemoveAt(0); });
+            Cfg.Locked(() =>
+            {
+                Cfg.me_faces.Add(print); while (Cfg.me_faces.Count > 12) Cfg.me_faces.RemoveAt(0);
+                Cfg.not_me_faces.RemoveAll(o => FaceId.Similarity(o, print) >= Cfg.face_match + 0.1);
+            });
             Cfg.Save();
             Notify?.Invoke($"Remembered your face ({Cfg.me_faces.Count} looks saved)");
             _log.Info($"face remembered ({Cfg.me_faces.Count} saved)");
@@ -163,7 +179,7 @@ public sealed class App : IDisposable
                 if (!Video.HasReaders) { Notify?.Invoke("Open nocat.cam in Discord (or any app) first, so it can see you"); break; }
                 Video.RememberRequested = true;
                 break;
-            case "forget_me": Cfg.Locked(() => Cfg.me_faces.Clear()); Cfg.Save(); Notify?.Invoke("Forgot your face"); break;
+            case "forget_me": Cfg.Locked(() => { Cfg.me_faces.Clear(); Cfg.not_me_faces.Clear(); }); Cfg.Save(); Notify?.Invoke("Forgot your face"); break;
             case "zoom_in" or "zoom_out" or "zoom_reset":
                 c.zoom = action == "zoom_reset" ? 1 : Math.Round(Math.Clamp(c.zoom + (action == "zoom_in" ? c.zoom_step : -c.zoom_step), 1, 3), 2);
                 c.Save();

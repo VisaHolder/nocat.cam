@@ -108,6 +108,17 @@ static class Program
         var show = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEvent);
         new Thread(() => { while (show.WaitOne()) ui.BeginInvoke(ShowSettings); }) { IsBackground = true }.Start();
 
+        // a "take-screenshots" file next to the exe = save pictures of every settings page into .\shots
+        var shotWatch = new FileSystemWatcher(AppContext.BaseDirectory, "take-screenshots") { EnableRaisingEvents = true };
+        shotWatch.Created += (_, _) => ui.BeginInvoke(async () =>
+        {
+            try { File.Delete(Path.Combine(AppContext.BaseDirectory, "take-screenshots")); } catch { }
+            ShowSettings();
+            try { await settings!.Shoot(Path.Combine(AppContext.BaseDirectory, "shots")); Log.Instance.Info("settings pictures saved"); }
+            catch (Exception e) { Log.Instance.Info("settings pictures failed: " + e.Message); }
+            settings?.Close();
+        });
+
         app.Start();
         Log.Instance.Info($"nocat.cam {Application.ProductVersion.Split('+')[0]} started");
         if (firstRun || args.Contains("--settings")) { app.Cfg.Save(); ShowSettings(); }

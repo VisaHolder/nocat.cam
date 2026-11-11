@@ -1,11 +1,13 @@
 # nocat.cam
 
-A small tray app for the **EMEET PIXY** webcam: your own hand gestures, keybinds, nine saved camera
+A small tray app for the **EMEET PIXY** webcam (4K and PIXY 2K): your own hand gestures, keybinds, nine saved camera
 positions with smooth glides, lossless zoom, background blur / replace, auto-sleep, and the camera's
 picture settings. All of it reaches Discord, OBS and any other app through its own **nocat.cam**
 virtual camera. EMEET Studio isn't needed.
 
-Windows 10/11 x64, .NET 10.
+Windows 10/11 x64, .NET 10. **[Download the latest release](https://github.com/VisaHolder/nocat.cam/releases/latest)** (it updates itself after that).
+
+<p align="center"><img src="docs/screenshots/control.png" width="720" alt="nocat.cam settings: Camera page"></p>
 
 ## What it does
 
@@ -13,9 +15,13 @@ Windows 10/11 x64, .NET 10.
   trigger any action, with their own hold time. Open palm stays the camera's own tracking toggle.
 - **Keybinds** for everything (any combo; defaults: `Alt+1`–`Alt+9` go to a position, `Alt+Shift+1`–`9`
   save one, `Alt+0` sleep/wake). They use Windows' own hotkeys, so nothing watches your keyboard.
+- **Only me tracking**: nocat.cam steers the camera itself and follows only *your* face (press *This is me*
+  a few times). Anyone walking behind you is ignored, and faces it sees next to yours are learned as "not me".
+  Crouching or ducking doesn't lose you. *Whole body* follows anyone's full outline instead.
 - **Positions**: nine slots that remember aim *and* zoom, with a smooth eased glide between them.
 - **Zoom**: crops the 4K picture, so it stays sharp up to about 2×.
-- **Background**: blur, or any picture, cut out around you.
+- **Background**: blur, or any picture, cut out around you. With your face saved, other people in view get
+  blurred too.
 - **Sleep**: *privacy* (camera turns away and is released, so its in-use light goes off) or *soft*
   (camera stays on, apps see a "camera asleep" card, and a gesture can wake it). Optional auto-sleep
   when nobody is in view or no app is using nocat.cam, and auto-wake when an app starts using it.
@@ -24,8 +30,19 @@ Windows 10/11 x64, .NET 10.
 - **Light on resources**: the camera's MJPEG pictures are read through DirectShow and decoded by libjpeg-turbo
   straight to the size being sent (4K to 1080p while decoding), then stay NV12 to the virtual camera. When no
   app shows nocat.cam it only sends 2 pictures a second. About 1-2% CPU on a Ryzen 9800X3D.
+- **Updates** from GitHub releases: *Check now* in settings, or by itself every 6 hours (only while no app
+  is using nocat.cam, so a call is never cut off). Each version gets its own folder; the old one stays as a backup.
+- **PIXY 2K**: works the same; sizes above 1440p are hidden since that camera tops out at 2560x1440@30 and 1080p@60.
 - **Frame rate**: 1080p/720p up to 60 fps (the camera's 1080p mode), 1440p/4K 30. In dim light the PIXY slows
   itself down (1080p mode 60 -> 30, 4K mode 30 -> 20), so for Discord 1080p at 60 is the smoothest choice.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Positions](docs/screenshots/positions.png) | ![Gestures](docs/screenshots/gestures.png) |
+| ![Keybinds](docs/screenshots/keys.png) | ![Picture](docs/screenshots/picture.png) |
+| ![Sleep](docs/screenshots/sleep.png) | ![General](docs/screenshots/general.png) |
 
 ## Setup
 

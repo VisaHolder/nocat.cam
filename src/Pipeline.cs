@@ -49,6 +49,8 @@ public sealed class Pipeline
     /// <summary>Set to ask the AI to save the face it sees now as "me"; the result arrives via OnRemembered.</summary>
     public volatile bool RememberRequested;
     public event Action<float[]?>? OnRemembered;
+    /// <summary>Someone else's face, seen at the same time as yours (so it's surely not you).</summary>
+    public event Action<float[]>? OnLearnedOther;
     /// <summary>Last face-lock result for the settings page: true = following you, false = can't see you.</summary>
     public volatile bool FaceFound;
     /// <summary>Latest person box in the picture, as fractions 0..1: centre x, top y, bottom y, share of picture.</summary>
@@ -326,7 +328,7 @@ public sealed class Pipeline
         public void ClearGesture() { _held = null; }
 
         (double cx, double cy, double top, double bottom)? _me;
-        double _meAt = -10, _meChecked = -10, _faceRetryAt, _scoreLogAt;
+        double _meAt = -10, _meChecked = -10, _faceRetryAt, _scoreLogAt, _learnAt = -10;
 
         /// <summary>
         /// Find your face among all faces (and handle "remember me"). Your face is the one that looks like
@@ -359,7 +361,7 @@ public sealed class Pipeline
                 }
             }
 
-            var me = c.Locked(() => c.me_faces.ToList());
+            var (me, others) = c.Locked(() => (c.me_faces.ToList(), c.not_me_faces.ToList()));
             if (me.Count == 0) { _me = null; return; }
             FaceId.Face? best = null; double bestScore = 0;
             var scores = new List<double>();
@@ -368,6 +370,8 @@ public sealed class Pipeline
                 double cx = (f.X + f.W / 2.0) / rw, cy = (f.Y + f.H / 2.0) / rh;
                 double near = Math.Sqrt((cx - _lastFace.cx) * (cx - _lastFace.cx) + (cy - _lastFace.cy) * (cy - _lastFace.cy));
                 double look = FaceId.MatchScore(f.Print, me);
+                // a face that looks more like someone it has learned isn't you, however close it is
+                if (others.Count > 0 && FaceId.MatchScore(f.Print, others) >= look) { scores.Add(look); continue; }
                 double need = near < 0.12 && now - _meAt < 1 ? c.face_match - 0.25 : c.face_match;
                 double score = look - need - 0.1 * near;
                 if (look >= need && (best == null || score > bestScore)) { bestScore = score; best = f; }
@@ -378,6 +382,20 @@ public sealed class Pipeline
                 // two or more faces in view: log how alike each is to you, to tune the match level
                 _scoreLogAt = now;
                 Log.Instance.Info("faces in view, likeness to you: " + string.Join(", ", scores.Select(x => x.ToString("0.00"))));
+            }
+            if (best is { } mine && faces.Count > 1 && now - _learnAt > 5)
+            {
+                // you and someone else at once: remember the other face as "not me" (only clear cases,
+                // only if it isn't one already learned)
+                foreach (var f in faces)
+                {
+                    if (ReferenceEquals(f.Print, mine.Print)) continue;
+                    if (FaceId.MatchScore(f.Print, me) >= c.face_match - 0.1) continue;
+                    if (others.Count > 0 && FaceId.MatchScore(f.Print, others) >= 0.9) continue;
+                    _learnAt = now;
+                    _p.OnLearnedOther?.Invoke(f.Print);
+                    break;
+                }
             }
             if (best is { } b)
             {

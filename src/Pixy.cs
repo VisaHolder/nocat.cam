@@ -23,11 +23,18 @@ public sealed class Pixy : IDisposable
     HidStream? Open()
     {
         if (_stream != null) return _stream;
-        foreach (var d in DeviceList.Local.GetHidDevices(Vid, Pid))
+        // the PIXY 4K is 328F:00C0; the PIXY 2K may use another product id, so take any EMEET PIXY
+        var devices = DeviceList.Local.GetHidDevices(Vid).OrderBy(d => d.ProductID == Pid ? 0 : 1);
+        foreach (var d in devices)
         {
             try
             {
                 if (d.GetMaxOutputReportLength() < 32) continue;   // the control interface
+                if (d.ProductID != Pid)
+                {
+                    string pn = ""; try { pn = d.GetProductName() ?? ""; } catch { }
+                    if (!pn.Contains("PIXY", StringComparison.OrdinalIgnoreCase)) continue;
+                }
                 if (d.TryOpen(out var s))
                 {
                     s.ReadTimeout = 200; s.WriteTimeout = 500;

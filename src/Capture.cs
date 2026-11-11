@@ -39,10 +39,30 @@ public sealed class Capture : IDisposable
     }
 
     /// <summary>Every MJPEG size/frame rate the camera offers (for troubleshooting).</summary>
+    /// <summary>
+    /// The PIXY family: "EMEET PIXY" (4K) and the PIXY 2K may show up under slightly different names, so
+    /// asking for "EMEET PIXY" takes an exact match first, else any camera with PIXY in its name
+    /// (never a virtual camera).
+    /// </summary>
+    static (string name, System.Runtime.InteropServices.ComTypes.IMoniker? moniker) Find(string name)
+    {
+        var cams = DShow.Cameras();
+        var exact = cams.FirstOrDefault(c => c.name == name);
+        if (exact.moniker != null || name != "EMEET PIXY") return exact;
+        return cams.FirstOrDefault(c => c.name.Contains("PIXY", StringComparison.OrdinalIgnoreCase)
+                                        && !c.name.Contains("virtual", StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static bool IsPixy(string cameraName) =>
+        cameraName == "EMEET PIXY" || (cameraName.Contains("PIXY", StringComparison.OrdinalIgnoreCase) && !cameraName.Contains("virtual", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Picture sizes the camera offered the last time it was opened (e.g. 3840x2160, 2560x1440...).</summary>
+    public static volatile string[] LastSizes = [];
+
     public static List<string> Modes(string name)
     {
         var list = new List<string>();
-        var cam = DShow.Cameras().FirstOrDefault(c => c.name == name);
+        var cam = Find(name);
         if (cam.moniker == null) return list;
         try
         {
@@ -107,7 +127,7 @@ public sealed class Capture : IDisposable
     public static Capture? Open(string name, int wantW, int wantH, int wantFps, out string? error)
     {
         error = null;
-        var cam = DShow.Cameras().FirstOrDefault(c => c.name == name);
+        var cam = Find(name);
         if (cam.moniker == null) { error = "camera not found"; return null; }
         object? graphObj = null;
         try
@@ -123,6 +143,7 @@ public sealed class Capture : IDisposable
             var sc = StreamConfig(builder, filter);
             var caps = Caps(sc);
             if (caps.Count == 0) throw new InvalidOperationException("the camera offers no MJPEG formats");
+            LastSizes = caps.OrderByDescending(c => (long)c.w * c.h).Select(c => $"{c.w}x{c.h}").Distinct().ToArray();
             var pick = caps.OrderBy(c => Math.Abs((long)c.w * c.h - (long)wantW * wantH) * 4
                                          + (c.fps >= wantFps - 0.5 ? 0 : (1L << 36) + (long)((wantFps - c.fps) * 1000)))
                            .First();

@@ -377,6 +377,12 @@ function syncAll() {
     : "1080p and 720p can also do 60 fps.";
   $("#bgname").textContent = c.bg_image ? c.bg_image.split(/[\\/]/).pop() : "nocat card";
   $("#merow").style.display = c.track_style === "me" ? "" : "none";
+  // PIXY 2K: hide sizes the camera can't do
+  if (S.camera_sizes && S.camera_sizes.length) {
+    const area = s => { const [w, h] = s.split("x").map(Number); return w * h; };
+    const max = Math.max(...S.camera_sizes.map(area));
+    $$('select[data-key="capture_size"] option, select[data-key="vcam_size"] option').forEach(o => o.hidden = area(o.value) > max);
+  }
   $("#trackhelp").textContent = c.track_style === "me"
     ? "Follows only your face. Anyone else walking by is ignored; if it can't see you it stays put."
     : c.track_style === "body"
@@ -499,7 +505,7 @@ async function poll() {
     $("#q-sleep").checked = st.asleep;
     if (st.update) $("#updhelp").textContent = st.update.startsWith("failed") ? "Update " + st.update : st.update[0].toUpperCase() + st.update.slice(1) + "...";
     $("#mehelp").textContent = !st.faces ? "Look at the camera and press This is me (do it 3-4 times: straight, a bit left, a bit right)."
-      : `${st.faces} look${st.faces > 1 ? "s" : ""} saved` + (st.face_found === true ? " · following you" : st.face_found === false ? " · can't see you, holding still" : "");
+      : `${st.faces} look${st.faces > 1 ? "s" : ""} saved` + (st.others ? `, ${st.others} other face${st.others > 1 ? "s" : ""} learned` : "") + (st.face_found === true ? " · following you" : st.face_found === false ? " · can't see you, holding still" : "");
     if (Math.abs((S.cfg.zoom || 1) - st.zoom) > 0.001) { S.cfg.zoom = st.zoom; syncAll(); }
     if (JSON.stringify(S.cfg.positions) !== JSON.stringify(st.positions)) { S.cfg.positions = st.positions; renderPositions(); }
   } catch (e) {}

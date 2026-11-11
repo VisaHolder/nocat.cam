@@ -54,6 +54,22 @@ public sealed class SettingsForm : Form
         cw.Navigate("https://nocat.cam.local/index.html");
     }
 
+    /// <summary>Save a picture of every settings page into <paramref name="dir"/> (for the README).</summary>
+    public async Task Shoot(string dir)
+    {
+        while (_web.CoreWebView2 == null) await Task.Delay(100);
+        ClientSize = LogicalToDeviceUnits(new Size(980, 760));
+        await Task.Delay(2500);                                   // page loaded and first status in
+        Directory.CreateDirectory(dir);
+        foreach (var p in new[] { "control", "positions", "gestures", "keys", "picture", "sleep", "general" })
+        {
+            await _web.CoreWebView2.ExecuteScriptAsync($"document.querySelector('a[data-p=\"{p}\"]').click()");
+            await Task.Delay(1200);
+            using var f = File.Create(Path.Combine(dir, p + ".png"));
+            await _web.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, f);
+        }
+    }
+
     public string? PickPicture()
     {
         using var d = new OpenFileDialog { Title = "Background picture", Filter = "Pictures|*.png;*.jpg;*.jpeg;*.bmp;*.webp" };
@@ -106,6 +122,7 @@ public sealed class Bridge
                     ["gestures"] = JsonSerializer.SerializeToNode(Gestures.Names),
                     ["hotkey_labels"] = JsonSerializer.SerializeToNode(Actions.HotkeyLabels),
                     ["startup"] = App.StartupEnabled,
+                    ["camera_sizes"] = JsonSerializer.SerializeToNode(Capture.LastSizes),
                     ["version"] = Application.ProductVersion.Split('+')[0],
                 };
             case "status":
@@ -121,6 +138,7 @@ public sealed class Bridge
                     ["asleep"] = _app.Asleep,
                     ["zoom"] = c.zoom,
                     ["faces"] = c.Locked(() => c.me_faces.Count),
+                    ["others"] = c.Locked(() => c.not_me_faces.Count),
                     ["update"] = Updater.State,
                     ["face_found"] = v.FaceLock && !_app.Asleep && _app.TrackingOn ? v.FaceFound : (bool?)null,
                     ["positions"] = c.Locked(() => JsonSerializer.SerializeToNode(c.positions)),
@@ -182,18 +200,20 @@ public sealed class Bridge
             case "pic_info":
             {
                 var cap = _app.Video.Camera;
-                return cap == null ? new JsonObject() : JsonSerializer.SerializeToNode(PictureControls.Read(cap));
+                // the camera lives on a background (MTA) thread; asking from this window's thread fails, so ask from one too
+                return cap == null ? new JsonObject() : JsonSerializer.SerializeToNode(Task.Run(() => PictureControls.Read(cap)).GetAwaiter().GetResult());
             }
             case "pic_set":
             {
                 var cap = _app.Video.Camera;
-                if (cap != null) PictureControls.Set(cap, S(a, 0), (int)a[1]!.GetValue<double>(), a[2]!.GetValue<bool>());
+                if (cap != null) { string n = S(a, 0); int v = (int)a[1]!.GetValue<double>(); bool au = a[2]!.GetValue<bool>(); Task.Run(() => PictureControls.Set(cap, n, v, au)); }
                 return true;
             }
             case "pic_reset":
             {
                 var cap = _app.Video.Camera;
-                return cap == null ? null : JsonSerializer.SerializeToNode(PictureControls.Reset(cap, S(a, 0)));
+                string rn = S(a, 0);
+                return cap == null ? null : JsonSerializer.SerializeToNode(Task.Run(() => PictureControls.Reset(cap, rn)).GetAwaiter().GetResult());
             }
         }
         return null;
