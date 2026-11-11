@@ -35,7 +35,7 @@ public sealed class App : IDisposable
         {
             if (_bodyTracking == value) return;
             _bodyTracking = value;
-            if (!value) Video.AutoZoom = 0;                       // back to your own zoom
+            if (!value) { Video.AutoZoom = 0; _frameRef = 0; }   // back to your own zoom; re-measure next time
             if (Cfg.body_tracking != value) { Cfg.body_tracking = value; Cfg.Save(); }
         }
     }
@@ -264,7 +264,7 @@ public sealed class App : IDisposable
             Video.AutoFrame = BodyTracking && Cfg.auto_frame;
             int speed = Cfg.follow_speed;
             double Gain = 0.25 + 0.06 * speed, MaxStep = 4 + 1.6 * speed, Settle = Math.Max(0.3, 0.5 - 0.03 * speed);   // 5 = the old feel
-            if (!Cfg.auto_frame) Video.AutoZoom = 0;
+            if (!Cfg.auto_frame) { Video.AutoZoom = 0; _frameRef = 0; }
             if (!BodyTracking || Asleep) continue;
             var b = Video.Body;
             double now = Now;
@@ -292,22 +292,34 @@ public sealed class App : IDisposable
     }
 
     /// <summary>
-    /// Auto framing: zoom so your face stays about the same size when you lean back or come closer; with
-    /// two or more people (Whole body), zoom out until everyone fits. Waits 20 s after you zoom by hand.
+    /// Auto framing: keeps your face the size it is at the zoom you chose. The first measurement after
+    /// tracking starts (or 20 s after you zoom by hand) is remembered; leaning back zooms in, coming closer
+    /// zooms out. With two or more people (Whole body) it zooms out until everyone fits.
     /// </summary>
     void AutoFrame(BodyInfo b, double now)
     {
         if (!Cfg.auto_frame || b.z <= 0) return;
-        if (now - ManualZoomAt < 20) { Video.AutoZoom = 0; return; }   // you just zoomed yourself
-        double want;
-        if (b.span > 0) want = b.z * 0.55 / b.span;            // faces spread over about half the width
-        else if (b.head > 0) want = b.z * 0.20 / b.head;      // face about a fifth of the picture's height
-        else return;
-        want = Math.Clamp(want, 1, 2.5);
+        if (now - ManualZoomAt < 20) { Video.AutoZoom = 0; _frameRef = 0; return; }   // you just zoomed yourself
         double z = Video.AutoZoom > 0 ? Video.AutoZoom : Math.Max(1, Cfg.zoom);
+        double want;
+        if (b.span > 0) want = b.z * 0.55 / b.span;            // a group: faces spread over about half the width
+        else if (b.head > 0)
+        {
+            double atOne = b.head / b.z;                        // how big your face is with no zoom
+            if (_frameRef <= 0)
+            {
+                _frameRef = atOne * Math.Max(1, Cfg.zoom);
+                _log.Info($"auto framing: keeping your face at {_frameRef * 100:0}% of the picture height");
+            }
+            want = _frameRef / atOne;
+        }
+        else return;
+        want = Math.Clamp(want, 1, 3);
         if (Math.Abs(want - z) / z < 0.08) { if (Video.AutoZoom <= 0) Video.AutoZoom = z; return; }   // close enough: don't breathe
+        if (Math.Abs(want - _frameLogged) > 0.25) { _frameLogged = want; _log.Info($"auto framing: zoom {z:0.00} -> {want:0.00}"); }
         Video.AutoZoom = Math.Round(want, 3);                 // the picture eases there smoothly
     }
+    double _frameRef, _frameLogged;
 
     void Nudge(string action)
     {
