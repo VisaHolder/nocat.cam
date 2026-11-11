@@ -10,7 +10,7 @@
     <AssemblyName>nocat.cam</AssemblyName>
     <RootNamespace>NocatCam</RootNamespace>
     <Product>nocat.cam</Product>
-    <Version>1.0.3</Version>
+    <Version>1.0.4</Version>
     <ApplicationIcon>assets\logo.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <Platforms>x64</Platforms>

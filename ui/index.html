@@ -157,7 +157,9 @@
       <div class="row"><div class="lbl">Tracking<small>Follow you around. Your open palm toggles the camera's own tracking too.</small></div>
         <label class="tg"><input type="checkbox" id="q-track"><span></span></label></div>
       <div class="row"><div class="lbl">Tracking style<small id="trackhelp"></small></div>
-        <div class="seg" data-key="track_style"><button data-v="camera">Face</button><button data-v="body">Whole body</button></div></div>
+        <div class="seg" data-key="track_style"><button data-v="camera">Face</button><button data-v="body">Whole body</button><button data-v="me">Only me</button></div></div>
+      <div class="row" id="merow"><div class="lbl">Your face<small id="mehelp"></small></div>
+        <div><button class="btn sm pri" data-a="remember_me">This is me</button> <button class="btn ghost sm" data-a="forget_me">Forget</button></div></div>
       <div class="row"><div class="lbl">Asleep<small>Privacy or soft sleep, as set on the Sleep page.</small></div>
         <label class="tg"><input type="checkbox" id="q-sleep"><span></span></label></div>
       <div class="row"><div class="lbl">Background</div>
@@ -359,7 +361,10 @@ function syncAll() {
     : c.fps === 60 ? "60 fps uses the camera's own 1080p mode. It needs a bright room: in dim light the camera slows itself to 20-30 fps."
     : "1080p and 720p can also do 60 fps.";
   $("#bgname").textContent = c.bg_image ? c.bg_image.split(/[\\/]/).pop() : "nocat card";
-  $("#trackhelp").textContent = c.track_style === "body"
+  $("#merow").style.display = c.track_style === "me" ? "" : "none";
+  $("#trackhelp").textContent = c.track_style === "me"
+    ? "Follows only your face. Anyone else walking by is ignored; if it can't see you it stays put."
+    : c.track_style === "body"
     ? "nocat.cam follows your whole outline, so crouching or turning away doesn't lose you."
     : "The PIXY's own face tracking (fastest, but loses you when your face drops out of view).";
   $("#stylehelp").textContent = c.sleep_style === "soft"
@@ -477,6 +482,8 @@ async function poll() {
     $("#stext").textContent = st.text;
     $("#q-track").checked = st.tracking;
     $("#q-sleep").checked = st.asleep;
+    $("#mehelp").textContent = !st.faces ? "Look at the camera and press This is me (do it 3-4 times: straight, a bit left, a bit right)."
+      : `${st.faces} look${st.faces > 1 ? "s" : ""} saved` + (st.face_found === true ? " · following you" : st.face_found === false ? " · can't see you, holding still" : "");
     if (Math.abs((S.cfg.zoom || 1) - st.zoom) > 0.001) { S.cfg.zoom = st.zoom; syncAll(); }
     if (JSON.stringify(S.cfg.positions) !== JSON.stringify(st.positions)) { S.cfg.positions = st.positions; renderPositions(); }
   } catch (e) {}

@@ -120,6 +120,8 @@ public sealed class Bridge
                     ["tracking"] = _app.TrackingOn,
                     ["asleep"] = _app.Asleep,
                     ["zoom"] = c.zoom,
+                    ["faces"] = c.Locked(() => c.me_faces.Count),
+                    ["face_found"] = v.FaceLock ? v.FaceFound : (bool?)null,
                     ["positions"] = c.Locked(() => JsonSerializer.SerializeToNode(c.positions)),
                     ["hotkeys_failed"] = JsonSerializer.SerializeToNode(_app.Keys.Failed),
                 };

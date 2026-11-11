@@ -28,6 +28,7 @@ public static class Actions
             ["zoom_out"] = "Zoom out",
             ["zoom_reset"] = "Zoom reset",
             ["toggle_bg"] = "Background effect on / off",
+            ["remember_me"] = "Remember my face (for Only me)",
         };
         for (int i = 1; i <= 9; i++) d[$"goto_{i}"] = $"Go to position {i}";
         return d;

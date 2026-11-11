@@ -39,6 +39,14 @@ public sealed class App : IDisposable
             s => { _log.Info("status: " + s); Changed?.Invoke(); });
         Keys = new Hotkeys(a => Run(a));
         Video.CameraOpened += () => { if (Cfg.fixed_exposure) ApplyExposure(true); };
+        Video.OnRemembered += print =>
+        {
+            if (print == null) { Notify?.Invoke("Couldn't see a face - look at the camera and try again"); return; }
+            Cfg.Locked(() => { Cfg.me_faces.Add(print); while (Cfg.me_faces.Count > 12) Cfg.me_faces.RemoveAt(0); });
+            Cfg.Save();
+            Notify?.Invoke($"Remembered your face ({Cfg.me_faces.Count} looks saved)");
+            _log.Info($"face remembered ({Cfg.me_faces.Count} saved)");
+        };
     }
 
     public void Start()
@@ -135,6 +143,8 @@ public sealed class App : IDisposable
         {
             case "tracking": StartTracking(); break;
             case "manual": BodyTracking = false; Cam.SetMode(Pixy.Manual); break;
+            case "remember_me": Video.RememberRequested = true; break;
+            case "forget_me": Cfg.Locked(() => Cfg.me_faces.Clear()); Cfg.Save(); Notify?.Invoke("Forgot your face"); break;
             case "zoom_in" or "zoom_out" or "zoom_reset":
                 c.zoom = action == "zoom_reset" ? 1 : Math.Round(Math.Clamp(c.zoom + (action == "zoom_in" ? c.zoom_step : -c.zoom_step), 1, 3), 2);
                 c.Save();
@@ -154,7 +164,7 @@ public sealed class App : IDisposable
     /// <summary>Tracking on, in the chosen style: the camera's own face tracking, or nocat.cam's whole-body tracking.</summary>
     void StartTracking()
     {
-        if (Cfg.track_style == "body") { Cam.SetMode(Pixy.Manual); BodyTracking = true; }
+        if (Cfg.track_style is "body" or "me") { Cam.SetMode(Pixy.Manual); BodyTracking = true; }
         else { BodyTracking = false; Cam.SetMode(Pixy.Tracking); }
     }
 
@@ -172,6 +182,7 @@ public sealed class App : IDisposable
         {
             Thread.Sleep(100);
             Video.WantBody = BodyTracking && !Asleep;
+            Video.FaceLock = BodyTracking && Cfg.track_style == "me" && Cfg.me_faces.Count > 0;
             if (!BodyTracking || Asleep) continue;
             var b = Video.Body;
             double now = Now;

@@ -44,6 +44,13 @@ public sealed class Pipeline
 
     /// <summary>Set by the app while whole-body tracking is on: measure where the person is 5 times a second.</summary>
     public volatile bool WantBody;
+    /// <summary>Follow only the face that matches the saved fingerprints ("only me").</summary>
+    public volatile bool FaceLock;
+    /// <summary>Set to ask the AI to save the face it sees now as "me"; the result arrives via OnRemembered.</summary>
+    public volatile bool RememberRequested;
+    public event Action<float[]?>? OnRemembered;
+    /// <summary>Last face-lock result for the settings page: true = following you, false = can't see you.</summary>
+    public volatile bool FaceFound;
     /// <summary>Latest person box in the picture, as fractions 0..1: centre x, top y, bottom y, share of picture.</summary>
     public (double cx, double top, double bottom, double area, double at) Body { get; internal set; }
 
@@ -196,7 +203,7 @@ public sealed class Pipeline
                 bool send = vcam != null && (HasReaders || now - lastSend >= IdleSendEvery);
                 string bg = vcam != null && !soft ? c.bg_mode : "off";
                 bool gestureDue = detect && now >= nextGesture;
-                bool presenceDue = (c.auto_sleep_away_min > 0 || WantBody) && now >= nextPresence;
+                bool presenceDue = (c.auto_sleep_away_min > 0 || WantBody || RememberRequested) && now >= nextPresence;
                 bool maskDue = send && bg != "off";                       // blur/picture wants a fresh outline
                 bool handAi = !_ai.Busy && (gestureDue || presenceDue || maskDue);
                 bool needPicture = (send && !soft) || handAi;
@@ -221,7 +228,7 @@ public sealed class Pipeline
                 if (handAi)
                 {
                     if (gestureDue) nextGesture = now + GestureEvery;
-                    if (presenceDue) nextPresence = now + (WantBody ? 0.2 : 1);
+                    if (presenceDue) nextPresence = now + (WantBody || RememberRequested ? 0.2 : 1);
                     _ai.Submit(frame!.Data, frame.W, frame.H, zoom, gestureDue, presenceDue || maskDue, presenceDue, c);
                 }
 
@@ -289,6 +296,8 @@ public sealed class Pipeline
         readonly AutoResetEvent _go = new(false);
         byte[] _buf = [];
         int _w, _h; double _zoom; bool _gesture, _mask, _presence; Config? _cfg;
+        FaceId? _faces;
+        (double cx, double cy) _lastFace = (0.5, 0.35);
         volatile bool _busy, _stop;
         GestureRecognizer? _rec;
         Segmenter? _seg;
@@ -315,6 +324,56 @@ public sealed class Pipeline
 
         public void ClearGesture() { _held = null; }
 
+        /// <summary>
+        /// Face lock: find faces, keep the one that best matches your saved fingerprints (and is near where
+        /// you were), and report it as the person to follow. No match = report nobody, so the camera holds
+        /// still instead of swinging to someone else.
+        /// </summary>
+        void FaceStep(Config c, double now)
+        {
+            string here = AppContext.BaseDirectory;
+            _faces ??= new FaceId(Path.Combine(here, "models", "face_detector.tflite"), Path.Combine(here, "models", "face_embedder.tflite"));
+            var (rgb, rw, rh) = Nv12.SmallRgb(_buf, _w, _h, _zoom, 640);
+            var faces = _faces.Faces(rgb, rw, rh);
+            if (faces.Count > 0) _p.LastPerson = now;
+
+            if (_p.RememberRequested)
+            {
+                _p.RememberRequested = false;
+                // the biggest face nearest the middle is you
+                var you = faces.OrderByDescending(f => f.W * f.H * (1.5 - Math.Abs((f.X + f.W / 2.0) / rw - 0.5))).FirstOrDefault();
+                _p.OnRemembered?.Invoke(faces.Count == 0 ? null : you.Print);
+                if (faces.Count > 0) _lastFace = ((you.X + you.W / 2.0) / rw, (you.Y + you.H / 2.0) / rh);
+            }
+            if (!_p.FaceLock) return;
+
+            var me = c.Locked(() => c.me_faces.ToList());
+            FaceId.Face? best = null; double bestScore = 0;
+            foreach (var f in faces)
+            {
+                double cx = (f.X + f.W / 2.0) / rw, cy = (f.Y + f.H / 2.0) / rh;
+                double near = Math.Sqrt((cx - _lastFace.cx) * (cx - _lastFace.cx) + (cy - _lastFace.cy) * (cy - _lastFace.cy));
+                // the face right where you just were only has to look roughly like you (turned head, bad light);
+                // a face somewhere else has to look clearly like you before the camera goes there
+                double look = FaceId.MatchScore(f.Print, me);
+                double need = near < 0.12 ? c.face_match - 0.25 : c.face_match;
+                double score = look - need - 0.1 * near;
+                if (look >= need && (best == null || score > bestScore)) { bestScore = score; best = f; }
+            }
+            if (best is { } b)
+            {
+                _lastFace = ((b.X + b.W / 2.0) / rw, (b.Y + b.H / 2.0) / rh);
+                double top = Math.Max(0, (b.Y - b.H * 0.6) / rh);              // top of the head (above the face box)
+                _p.Body = (_lastFace.cx, top, Math.Min(1, (b.Y + b.H * 3.0) / rh), 0.1, now);
+                _p.FaceFound = true;
+            }
+            else
+            {
+                _p.Body = (0.5, 0, 1, 0, now);                                 // nobody to follow: hold still
+                _p.FaceFound = false;
+            }
+        }
+
         void Run()
         {
             string here = AppContext.BaseDirectory;
@@ -329,6 +388,7 @@ public sealed class Pipeline
                 {
                     if (now < nextTry) continue;
                     var c = _cfg!;
+                    if (_presence && (_p.FaceLock || _p.RememberRequested)) FaceStep(c, now);
                     if (_mask)
                     {
                         _seg ??= new Segmenter(Path.Combine(here, "models", "selfie_segmenter.tflite"));
@@ -339,7 +399,7 @@ public sealed class Pipeline
                         {
                             var box = PersonBox(m, mw, mh);
                             if (box.area > 0.03) _p.LastPerson = now;
-                            _p.Body = (box.cx, box.top, box.bottom, box.area, now);
+                            if (!_p.FaceLock) _p.Body = (box.cx, box.top, box.bottom, box.area, now);
                         }
                     }
                     if (_gesture)
@@ -374,7 +434,7 @@ public sealed class Pipeline
         public void Dispose()
         {
             _stop = true; _go.Set();
-            if (_t.Join(3000)) { _rec?.Dispose(); _seg?.Dispose(); }   // still busy: let the process clean up
+            if (_t.Join(3000)) { _rec?.Dispose(); _seg?.Dispose(); _faces?.Dispose(); }   // still busy: let the process clean up
         }
     }
 

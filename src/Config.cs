@@ -23,7 +23,9 @@ public sealed class Config
     public int bg_blur { get; set; } = 6;
     public string bg_image { get; set; } = "";
     public string sleep_style { get; set; } = "privacy";  // privacy | soft
-    public string track_style { get; set; } = "camera";   // camera = PIXY follows your face | body = nocat.cam follows your whole body
+    public string track_style { get; set; } = "camera";   // camera = PIXY's own | body = anyone's whole body | me = only your saved face
+    public List<float[]> me_faces { get; set; } = new();     // fingerprints of your face for "only me"
+    public double face_match { get; set; } = 0.75;           // how alike a face must be to count as you
     public string wake_to { get; set; } = "stay";
     public double auto_sleep_away_min { get; set; }
     public double auto_sleep_unused_min { get; set; }
@@ -75,7 +77,7 @@ public sealed class Config
         hold_s = Math.Clamp(hold_s, 0.3, 10);
         min_score = Math.Clamp(min_score, 0.3, 0.95);
         bg_blur = Math.Clamp(bg_blur, 1, 10);
-        if (track_style is not ("camera" or "body")) track_style = "camera";
+        if (track_style is not ("camera" or "body" or "me")) track_style = "camera";
         if (fps != 30 && fps != 60) fps = 60;
         if (vcam_size is "3840x2160" or "2560x1440") fps = 30;               // the camera does 60 only up to 1080p
     }
