@@ -106,7 +106,7 @@ public sealed class Pipeline
         TurboJpeg? tj = null;
         int badPictures = 0;
         Nv12? outFrame = null;
-        double nextGesture = 0, nextPresence = 0, lastSend = 0, vcamFailedUntil = 0, retry = 3, perfLogAt = 0;
+        double nextGesture = 0, nextMask = 0, nextPresence = 0, lastSend = 0, vcamFailedUntil = 0, retry = 3, perfLogAt = 0;
         int fpsN = 0; double fpsT = Now;
         long readTicks = 0, workTicks = 0;
         var log = Log.Instance;
@@ -207,7 +207,7 @@ public sealed class Pipeline
                 string bg = vcam != null && !soft ? c.bg_mode : "off";
                 bool gestureDue = detect && now >= nextGesture;
                 bool presenceDue = (c.auto_sleep_away_min > 0 || WantBody || RememberRequested) && now >= nextPresence;
-                bool maskDue = send && bg != "off";                       // blur/picture wants a fresh outline
+                bool maskDue = send && bg != "off" && now >= nextMask;    // blur/picture: a fresh outline 15 times a second is plenty
                 bool handAi = !_ai.Busy && (gestureDue || presenceDue || maskDue);
                 bool needPicture = (send && !soft) || handAi;
 
@@ -231,6 +231,7 @@ public sealed class Pipeline
                 if (handAi)
                 {
                     if (gestureDue) nextGesture = now + GestureEvery;
+                    if (maskDue) nextMask = now + 1.0 / 15;
                     if (presenceDue) nextPresence = now + (WantBody || RememberRequested ? 0.2 : 1);
                     _ai.Submit(frame!.Data, frame.W, frame.H, zoom, gestureDue, presenceDue || maskDue, presenceDue, c);
                 }
@@ -330,7 +331,6 @@ public sealed class Pipeline
         (double cx, double cy, double top, double bottom)? _me;
         double _meAt = -10, _meChecked = -10, _faceRetryAt, _scoreLogAt, _learnAt = -10;
         List<(double cx, double cy, double w, bool me)> _seenFaces = new();
-        double _ignoredLogAt;
 
         /// <summary>
         /// Find your face among all faces (and handle "remember me"). Your face is the one that looks like
@@ -528,17 +528,6 @@ public sealed class Pipeline
                         var (name, score, hand, handAt) = _rec.Recognize(rgb, rw, rh, (long)(now * 1000));
                         if (hand) _p.LastPerson = now;
                         string? seen = name != null && score >= c.min_score ? name : null;
-                        if (seen != null && !MyHand(c, now, handAt))
-                        {
-                            // someone else's hand (logged now and then, to check it's working)
-                            if (now - _ignoredLogAt > 5)
-                            {
-                                _ignoredLogAt = now;
-                                Log.Instance.Info($"ignored {seen} from a hand that isn't yours (hand {(handAt is { } ha ? $"{ha.x:0.00},{ha.y:0.00}" : "?")}, faces " +
-                                    string.Join(" ", _seenFaces.Select(f => $"{f.cx:0.00},{f.cy:0.00}{(f.me ? " (you)" : "")}")) + ")");
-                            }
-                            seen = null;
-                        }
                         if (seen == null) { _held = null; _needRelease = false; }
                         else if (!_needRelease && now >= _cooldownUntil)
                         {
@@ -548,9 +537,16 @@ public sealed class Pipeline
                                 double hold = c.gesture_hold.TryGetValue(seen, out var hh) && hh > 0 ? hh : c.hold_s;
                                 if (now - _heldSince >= hold)
                                 {
-                                    _p._onGesture(seen);
+                                    // whose hand is it? checked once, right when the sign would fire (not every picture)
+                                    if (MyHand(c, now, handAt))
+                                    {
+                                        _p._onGesture(seen);
+                                        _cooldownUntil = now + c.cooldown_s;
+                                    }
+                                    else
+                                        Log.Instance.Info($"ignored {seen} from a hand that isn't yours (hand {(handAt is { } ha ? $"{ha.x:0.00},{ha.y:0.00}" : "?")}, faces " +
+                                            string.Join(" ", _seenFaces.Select(f => $"{f.cx:0.00},{f.cy:0.00}{(f.me ? " (you)" : "")}")) + ")");
                                     _held = null; _needRelease = true;
-                                    _cooldownUntil = now + c.cooldown_s;
                                 }
                             }
                         }

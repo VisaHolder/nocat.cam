@@ -1,13 +1,33 @@
-# nocat.cam
+<p align="center">
+  <img src="docs/screenshots/control.png" alt="nocat.cam's settings: the Camera page" width="880">
+</p>
 
-A small tray app for the **EMEET PIXY** webcam (4K and PIXY 2K): your own hand gestures, keybinds, nine saved camera
-positions with smooth glides, lossless zoom, background blur / replace, auto-sleep, and the camera's
-picture settings. All of it reaches Discord, OBS and any other app through its own **nocat.cam**
-virtual camera. EMEET Studio isn't needed.
+<h1 align="center">nocat.cam</h1>
 
-Windows 10/11 x64, .NET 10. **[Download the latest release](https://github.com/VisaHolder/nocat.cam/releases/latest)** (it updates itself after that).
+<p align="center">
+  <b>Hand gestures, keybinds, saved positions, zoom and background blur for the EMEET PIXY webcam.<br>
+  Discord, OBS and every other app see it through its own nocat.cam virtual camera.</b>
+</p>
 
-<p align="center"><img src="docs/screenshots/control.png" width="720" alt="nocat.cam settings: Camera page"></p>
+<p align="center">
+  <a href="https://github.com/VisaHolder/nocat.cam/releases/latest"><img src="https://img.shields.io/github/v/release/VisaHolder/nocat.cam?label=release&color=8b5cf6" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MPL--2.0-blue" alt="MPL-2.0"></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4" alt="Windows 10 and 11">
+</p>
+
+<p align="center">
+  <a href="https://github.com/VisaHolder/nocat.cam/releases/latest"><b>Download</b></a> ·
+  <a href="#setup">Setup</a> ·
+  <a href="#screenshots">Screenshots</a>
+</p>
+
+## Download and install
+
+Get `nocat.cam-v…-portable.zip` from the [latest release](https://github.com/VisaHolder/nocat.cam/releases/latest),
+right-click it, *Extract All…*, and run `nocat.cam.exe`. Nothing else needs installing first, not even .NET; see
+[Setup](#setup) for the one-time virtual camera step. It updates itself after that.
+
+Works with the PIXY 4K and the PIXY 2K. EMEET Studio isn't needed.
 
 ## What it does
 
@@ -83,8 +103,12 @@ camera's HID interface (VID 328F, PID 00C0, report 0x09):
 ## Credits
 
 - [MediaPipe](https://github.com/google-ai-edge/mediapipe) (Google, Apache 2.0): `libmediapipe.dll`, the
-  gesture recogniser and selfie segmenter models in `models\`.
+  gesture recogniser, selfie segmenter, face detector and image embedder models in `models\`.
 - [libjpeg-turbo](https://libjpeg-turbo.org/) (BSD/IJG): `turbojpeg.dll`.
 - [HidSharp](https://www.zer7.com/software/hidsharp) (Apache 2.0),
   [Microsoft WebView2](https://developer.microsoft.com/microsoft-edge/webview2/).
 - The virtual camera driver is [OBS Studio](https://obsproject.com/)'s (GPL 2.0), used as installed; nocat.cam only writes pictures to it.
+
+## Licence
+
+nocat.cam is under the [Mozilla Public License 2.0](LICENSE). The parts listed in Credits keep their own licences.
