@@ -101,11 +101,6 @@ public sealed class Pixy : IDisposable
 
     public int? GetMode() => Tx(0x01, 0x01, 0x01, wantReply: true) is { Length: > 0 } r ? r[0] : null;
 
-    /// <summary>The camera's own "auto privacy" timer in seconds (0 = never). EMEET Studio offers 10, 60, 900.</summary>
-    public bool SetAutoPrivacy(int seconds) => Tx(0x02, 0x01, 0x00, BitConverter.GetBytes((uint)seconds)) != null;
-
-    public int? GetAutoPrivacy() => Tx(0x02, 0x01, 0x01, wantReply: true) is { Length: >= 4 } r ? (int)BitConverter.ToUInt32(r, 0) : null;
-
     public bool MoveTo(double pan, double tilt)
     {
         bool ok = Tx(0x63, 0x01, 0x00, Axis(1, pan)) != null;

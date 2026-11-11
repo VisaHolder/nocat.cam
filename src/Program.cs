@@ -7,6 +7,7 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        if (args.Length >= 2 && args[0] == "--readers") { File.WriteAllLines(args[1], VcamUsers.Readers().Select(p => { try { return p + " " + System.Diagnostics.Process.GetProcessById(p).ProcessName; } catch { return p + " ?"; } })); Environment.Exit(0); return; }
         if (args.Length >= 2 && args[0] == "--boosttest") { Environment.Exit(BoostTest.Run(args[1])); return; }
         if (args.Length >= 1 && args[0] == "--install-vcam") { Environment.Exit(VcamDriver.InstallElevated()); return; }
         if (args.Length >= 1 && args[0] == "--uninstall-vcam") { Environment.Exit(VcamDriver.UninstallElevated()); return; }
@@ -126,9 +127,9 @@ static class Program
         app.Start();
         Log.Instance.Info($"nocat.cam {Application.ProductVersion.Split('+')[0]} started");
         // first start, or the camera driver isn't installed yet: open settings (it shows an Install banner)
-        if (firstRun || args.Contains("--settings") || !VcamDriver.Ready) { app.Cfg.Save(); ShowSettings(); }
+        if (firstRun || args.Contains("--settings") || (app.Cfg.virtual_cam && !VcamDriver.Ready)) { app.Cfg.Save(); ShowSettings(); }
         if (fromIdx >= 0) app.Say($"Updated to {Updater.Current}");
-        if (!VcamDriver.Ready) app.Say("One more step: open settings, General, and press Install next to Camera driver");
+        if (app.Cfg.virtual_cam && !VcamDriver.Ready) app.Say("One more step: open settings, General, and press Install next to Camera driver");
         Updater.StartAuto(app, ui);
 
         Application.Run();

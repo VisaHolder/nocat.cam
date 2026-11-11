@@ -7,10 +7,8 @@ namespace NocatCam;
 public sealed class Config
 {
     public bool gestures_enabled { get; set; } = true;
-    public string only_with_apps { get; set; } = "";
     public bool virtual_cam { get; set; } = true;
     public string vcam_size { get; set; } = "1920x1080";
-    public string capture_size { get; set; } = "3840x2160";
     public bool fixed_exposure { get; set; }
     public int fps { get; set; } = 60;                 // 60 for 1080p and smaller (the camera slows itself in dim light), 30 for 1440p/4K
     public double zoom { get; set; } = 1.0;
@@ -23,25 +21,24 @@ public sealed class Config
     public int bg_blur { get; set; } = 6;
     public string bg_image { get; set; } = "";
     public string sleep_style { get; set; } = "privacy";  // privacy | soft
-    public string unused_sleep_style { get; set; } = "privacy";  // when no app uses nocat.cam: privacy (camera turns down) | soft
     public string track_style { get; set; } = "camera";   // camera = PIXY's own | body = anyone's whole body | me = only your saved face
     public List<float[]> me_faces { get; set; } = new();     // fingerprints of your face for "only me"
     public List<float[]> not_me_faces { get; set; } = new(); // other people's faces, learned when seen next to you
     // How alike a face must be to count as you. Measured on reap's PC: you score 0.6-0.76 against your
     // saved looks, other people about 0.2. Not saved in the config, so a better value always applies.
     [System.Text.Json.Serialization.JsonIgnore] public double face_match => 0.5;
-    public bool bg_only_me { get; set; } = true;
+    public bool bg_only_me { get; set; } = true;              // with a saved face: blur everyone except you
     public Dictionary<string, string> gesture_keys { get; set; } = new();   // gesture -> key combo it presses
     public string brb_image { get; set; } = "";               // be-right-back picture ("" = nocat card)
     public int follow_speed { get; set; } = 5;                // 1 calm .. 10 quick
-    public bool auto_frame { get; set; } = true;
-    public bool body_tracking { get; set; }                   // nocat.cam's tracking was on (restored at start)              // zoom so your face stays the same size (nocat.cam tracking)
+    public bool auto_frame { get; set; } = true;              // keep your face the same size (nocat.cam tracking)
+    public bool body_tracking { get; set; }                   // nocat.cam's tracking was on (restored at start)
     public string low_light { get; set; } = "auto";           // off | auto | strong
-    public bool gestures_only_me { get; set; } = true;      // with a saved face: only your hands count            // with a saved face: blur everyone except you
-    public bool auto_update { get; set; } = true;           // install new versions from GitHub (only while no app is using nocat.cam)           // how alike a face must be to count as you
+    public bool gestures_only_me { get; set; } = true;        // with a saved face: only your hands count
+    public bool auto_update { get; set; } = true;             // install new versions from GitHub (only while no app is using nocat.cam)
     public string wake_to { get; set; } = "stay";
     public double auto_sleep_away_min { get; set; }
-    public double auto_sleep_unused_min { get; set; }
+    public double auto_sleep_unused_min { get; set; } = 5;   // face-down (light off) after this long with no app using nocat.cam
     public bool auto_wake_on_use { get; set; } = true;
     public double hold_s { get; set; } = 1.5;
     public Dictionary<string, double> gesture_hold { get; set; } = new();
@@ -85,7 +82,6 @@ public sealed class Config
         }
         foreach (var k in Actions.HotkeyLabels.Keys) hotkeys.TryAdd(k, "");
         if (vcam_size is not ("3840x2160" or "2560x1440" or "1920x1080" or "1280x720")) vcam_size = "1920x1080";
-        if (capture_size is not ("3840x2160" or "2560x1440" or "1920x1080")) capture_size = "3840x2160";
         zoom = Math.Clamp(zoom, 1, 3);
         hold_s = Math.Clamp(hold_s, 0.3, 10);
         min_score = Math.Clamp(min_score, 0.3, 0.95);

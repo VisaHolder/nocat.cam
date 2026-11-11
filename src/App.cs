@@ -105,33 +105,7 @@ public sealed class App : IDisposable
         if (Cfg.body_tracking && Cfg.track_style is "body" or "me") Run("tracking", "was on before");
     }
 
-    bool ShouldWatch()
-    {
-        if (!Cfg.gestures_enabled || CamAsleep) return false;   // in privacy mode it can't see you
-        var wanted = Cfg.only_with_apps.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        if (wanted.Length == 0) return true;
-        return RunningPrograms().Overlaps(wanted.Select(w => w.ToLowerInvariant().Replace(".exe", "")));
-    }
-
-    static (double at, HashSet<string> names) _procCache = (-10, ProcessNames());
-    static int _procBusy;
-    static HashSet<string> ProcessNames() => Process.GetProcesses().Select(p => { try { return p.ProcessName.ToLowerInvariant(); } catch { return ""; } }).ToHashSet();
-    static HashSet<string> RunningPrograms()
-    {
-        if (Now - _procCache.at >= 3 && Interlocked.Exchange(ref _procBusy, 1) == 0)
-        {
-            Task.Run(() =>
-            {
-                try
-                {
-                    var names = Process.GetProcesses().Select(p => { try { return p.ProcessName.ToLowerInvariant(); } catch { return ""; } }).ToHashSet();
-                    _procCache = (Now, names);
-                }
-                finally { Interlocked.Exchange(ref _procBusy, 0); }
-            });
-        }
-        return _procCache.names;
-    }
+    bool ShouldWatch() => Cfg.gestures_enabled && !CamAsleep;   // in privacy mode it can't see you
 
     // ---- actions --------------------------------------------------------------------
     /// <summary>Run an action on a worker thread (keeps keybinds and the UI snappy).</summary>
@@ -168,7 +142,7 @@ public sealed class App : IDisposable
         if (action == "sleep")
         {
             // nobody using nocat.cam: a soft sleep goes all the way down (camera turns away, light off)
-            if (why == "unused" && c.unused_sleep_style == "privacy" && SoftAsleep && !CamAsleep)
+            if (why == "unused" && SoftAsleep && !CamAsleep)
             {
                 if (Cam.SetMode(Pixy.Sleep)) { CamAsleep = true; SoftAsleep = false; AutoSlept = why; }
                 return;
@@ -176,7 +150,7 @@ public sealed class App : IDisposable
             if (Asleep) return;
             var m = Cam.GetMode();
             _modeBeforeSleep = m is Pixy.Manual or Pixy.Tracking ? m.Value : Pixy.Manual;
-            string style = why == "unused" ? c.unused_sleep_style : c.sleep_style;
+            string style = why == "unused" ? "privacy" : c.sleep_style;   // nobody is watching: no point in a card
             if (style == "soft" || why == "away") SoftAsleep = true;   // away: stay soft to see you come back
             else if (Cam.SetMode(Pixy.Sleep)) CamAsleep = true;
             AutoSlept = why;
@@ -263,7 +237,7 @@ public sealed class App : IDisposable
         const double HFov = 70, VFov = 42;          // PIXY field of view (degrees, roughly) at zoom 1
         const double StartX = 0.11, StartY = 0.10;  // how far off-centre before it sets off
         const double Tick = 0.06;
-        double lastMeasured = 0;
+        double lastMeasured = 0, lastSeen = 0;
         double cmdPan = 0, cmdTilt = 0, tgtPan = 0, tgtTilt = 0, velPan = 0, velTilt = 0;
         double tvPan = 0, tvTilt = 0, lastNPan = 0, lastNTilt = 0, lastNAt = -1;   // how fast you're moving (predicted between readings)
         bool have = false, moving = false;
@@ -275,7 +249,7 @@ public sealed class App : IDisposable
             Video.FaceLock = BodyTracking && Cfg.track_style == "me";      // no saved face yet = hold still
             Video.AutoFrame = BodyTracking && Cfg.auto_frame;
             if (!Cfg.auto_frame) { Video.AutoZoom = 0; _frameRef = 0; }
-            if (!BodyTracking || Asleep) { have = false; moving = false; tvPan = tvTilt = 0; lastNAt = -1; history.Clear(); continue; }
+            if (!BodyTracking || Asleep) { have = false; moving = false; tvPan = tvTilt = 0; lastNAt = -1; history.Clear(); if (!BodyTracking) Video.AutoZoom = 0; continue; }
             double now = Now;
             int speed = Cfg.follow_speed;
             double maxVel = 8 + 4 * speed;          // degrees a second at full speed (5 -> 28)
@@ -295,6 +269,7 @@ public sealed class App : IDisposable
                 lastMeasured = b.at;
                 if (b.area >= 0.03)
                 {
+                    lastSeen = b.at;
                     if (b.head > 0 || b.span > 0) AutoFrame(b, now);
                     // where the camera was pointing when that picture was taken (pictures reach us ~0.1 s late)
                     double when = b.at - 0.1, atPan = cmdPan, atTilt = cmdTilt;
@@ -326,12 +301,12 @@ public sealed class App : IDisposable
 
             // ---- glide the camera towards the target (which keeps moving with you between readings)
             if (!moving) { velPan = velTilt = 0; continue; }
-            if (now - lastMeasured > 0.5 || Video.Body.area < 0.03)
+            if (now - lastSeen > 0.5)
             {
                 // lost you: stop predicting, glide to a halt, then rest
                 tvPan *= 0.8; tvTilt *= 0.8;
-                if (now - lastMeasured > 1.5 || Video.Body.area < 0.03) { tgtPan = cmdPan + velPan * 0.15; tgtTilt = cmdTilt + velTilt * 0.15; tvPan = tvTilt = 0; }
-                if (Math.Abs(velPan) < 1 && Math.Abs(velTilt) < 1 && now - lastMeasured > 1.5) { moving = false; lastNAt = -1; continue; }
+                if (now - lastSeen > 1.0) { tgtPan = cmdPan + velPan * 0.15; tgtTilt = cmdTilt + velTilt * 0.15; tvPan = tvTilt = 0; }
+                if (Math.Abs(velPan) < 1 && Math.Abs(velTilt) < 1 && now - lastSeen > 1.5) { moving = false; lastNAt = -1; continue; }
             }
             tgtPan += Math.Clamp(tvPan, -maxVel * 0.8, maxVel * 0.8) * Tick;
             tgtTilt = Math.Clamp(tgtTilt + Math.Clamp(tvTilt, -maxVel * 0.8, maxVel * 0.8) * Tick, -60, 60);
@@ -354,7 +329,8 @@ public sealed class App : IDisposable
     /// </summary>
     static double Steer(double vel, double dist, double maxVel, double accel, double tick)
     {
-        double want = Math.Sign(dist) * Math.Min(maxVel, Math.Sqrt(2 * accel * 0.8 * Math.Abs(dist)));
+        // ...and never more than lands exactly on the target this step (no tiny back-and-forth at the end)
+        double want = Math.Sign(dist) * Math.Min(Math.Min(maxVel, Math.Sqrt(2 * accel * 0.8 * Math.Abs(dist))), Math.Abs(dist) / tick);
         double dv = Math.Clamp(want - vel, -accel * tick, accel * tick);
         return vel + dv;
     }
@@ -504,7 +480,7 @@ public sealed class App : IDisposable
                 if (Asleep && startedUsing && (AutoSlept == "unused" || c.auto_wake_on_use))
                 { Do("wake", "an app started using nocat.cam"); continue; }
                 bool unused = c.auto_sleep_unused_min > 0 && users != null && now - Math.Max(unusedSince, Math.Max(_lastActivity, Video.OpenedAt)) > c.auto_sleep_unused_min * 60;
-                if (unused && SoftAsleep && !CamAsleep && c.unused_sleep_style == "privacy") { Do("sleep", "unused"); continue; }
+                if (unused && SoftAsleep && !CamAsleep) { Do("sleep", "unused"); continue; }
                 if (Asleep) continue;
 
                 // timers count from the latest of: last seen / last used, your last action, camera (re)opened

@@ -68,6 +68,10 @@ public sealed class SettingsForm : Form
             using var f = File.Create(Path.Combine(dir, p + ".png"));
             await _web.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, f);
         }
+        // what the menus offer, as text (to check nothing is missing)
+        var menus = await _web.CoreWebView2.ExecuteScriptAsync(
+            "JSON.stringify({gestures:[...(document.querySelector('[data-g]')||{options:[]}).options].map(o=>o.text), keybinds:[...document.querySelectorAll('#kg-main > div:first-child, #kg-main > div:nth-child(3n+1)')].map(d=>d.textContent)})");
+        File.WriteAllText(Path.Combine(dir, "menus.json"), System.Text.Json.JsonSerializer.Deserialize<string>(menus) ?? "");
     }
 
     public string? PickPicture()
@@ -188,8 +192,6 @@ public sealed class Bridge
             }
             case "resume_hotkeys": _app.Keys.Bind(c.hotkeys); return true;
             case "action": _app.Run(S(a, 0)); return true;
-            case "get_auto_privacy": return _app.Cam.GetAutoPrivacy();
-            case "set_auto_privacy": return _app.Cam.SetAutoPrivacy((int)a[0]!.GetValue<double>());
             case "save_position": return JsonSerializer.SerializeToNode(_app.SavePosition(S(a, 0)));
             case "clear_position": c.Locked(() => c.positions.Remove(S(a, 0))); c.Save(); return true;
             case "vcam_state": return VcamDriver.State();

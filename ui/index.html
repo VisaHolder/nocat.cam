@@ -173,8 +173,6 @@
       <div class="row"><div class="lbl">Be right back<small>Apps see a "be right back" card; the camera keeps watching, so a gesture can turn it off.</small></div><label class="tg"><input type="checkbox" id="q-brb"><span></span></label></div>
       <div class="row"><div class="lbl">Asleep<small>Privacy or soft sleep, as set on the Sleep page.</small></div>
         <label class="tg"><input type="checkbox" id="q-sleep"><span></span></label></div>
-      <div class="row"><div class="lbl">Background</div>
-        <div class="seg" data-key="bg_mode"><button data-v="off">Off</button><button data-v="blur">Blur</button><button data-v="image">Picture</button></div></div>
     </div>
 
     <h2>Move</h2>
@@ -219,7 +217,6 @@
       <div class="row"><div class="lbl">Default hold time<small>Used by any sign without its own time.</small></div><div class="sl"><input type="range" min="0.3" max="5" step="0.1" data-key="hold_s"><span class="val" data-fmt="s"></span></div></div>
       <div class="row"><div class="lbl">Pause after a gesture</div><div class="sl"><input type="range" min="0" max="15" step="0.5" data-key="cooldown_s"><span class="val" data-fmt="s"></span></div></div>
       <div class="row"><div class="lbl">Strictness<small>Higher = fewer accidental triggers.</small></div><div class="sl"><input type="range" min="0.3" max="0.95" step="0.05" data-key="min_score"><span class="val" data-fmt="pct"></span></div></div>
-      <div class="row"><div class="lbl">Only while these apps are open<small>Comma-separated, e.g. obs64, discord. Empty = always.</small></div><input class="num" style="width:200px;text-align:left" data-key="only_with_apps" data-type="text"></div>
     </div>
   </section>
 
@@ -266,15 +263,8 @@
     <h2>Automatic</h2>
     <div class="card">
       <div class="row"><div class="lbl">Sleep when nobody is in view<small>Wakes by itself when you're back.</small></div><div class="sl"><input type="range" min="0" max="60" step="1" data-key="auto_sleep_away_min"><span class="val" data-fmt="min"></span></div></div>
-      <div class="row"><div class="lbl">When no app uses nocat.cam<small>Privacy = the camera turns down and its light goes off (also from a soft sleep); it comes back up when an app starts using nocat.cam.</small></div>
-        <div class="seg" data-key="unused_sleep_style"><button data-v="privacy">Privacy</button><button data-v="soft">Soft</button></div></div>
-      <div class="row"><div class="lbl">Sleep when no app uses nocat.cam</div><div class="sl"><input type="range" min="0" max="60" step="1" data-key="auto_sleep_unused_min"><span class="val" data-fmt="min"></span></div></div>
+      <div class="row"><div class="lbl">Sleep when no app uses nocat.cam<small>The camera turns face-down and its light goes off; it comes back up as soon as an app opens nocat.cam.</small></div><div class="sl"><input type="range" min="0" max="60" step="1" data-key="auto_sleep_unused_min"><span class="val" data-fmt="min"></span></div></div>
       <div class="row"><div class="lbl">Wake when an app starts using nocat.cam</div><label class="tg"><input type="checkbox" data-key="auto_wake_on_use"><span></span></label></div>
-    </div>
-    <h2>The camera's own timer</h2>
-    <div class="card">
-      <div class="row"><div class="lbl">Camera auto-privacy<small>Built into the PIXY: it turns away by itself after this long. Set to Never if nocat.cam's sleep handles it.</small></div>
-        <select id="autopriv"><option value="0">Never</option><option value="10">10 seconds</option><option value="60">1 minute</option><option value="900">15 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option></select></div>
     </div>
   </section>
 
@@ -293,7 +283,6 @@
     <div class="card">
       <div class="row"><div class="lbl">Camera driver<small id="vcamhelp">Checking...</small></div><button class="btn sm pri" id="vcaminst" style="display:none">Install</button></div>
       <div class="row"><div class="lbl">nocat.cam virtual camera<small>Pick "nocat.cam" in Discord. Gestures and effects need this on; off = Discord/OBS use the PIXY directly.</small></div><label class="tg"><input type="checkbox" data-key="virtual_cam"><span></span></label></div>
-      <div class="row"><div class="lbl">Take from camera at</div><select data-key="capture_size"><option>3840x2160</option><option>2560x1440</option><option>1920x1080</option></select></div>
       <div class="row"><div class="lbl">Send to apps at<small>Discord sends at most 1080p (720p without Nitro), so 1080p is best for Discord. 4K is for OBS/recording; blur at 4K is heavy.</small></div><select data-key="vcam_size"><option>3840x2160</option><option>2560x1440</option><option>1920x1080</option><option>1280x720</option></select></div>
       <div class="row"><div class="lbl">Frame rate<small id="fpshelp"></small></div>
         <div class="seg" data-key="fps" id="fpsseg"><button data-v="30">30 fps</button><button data-v="60">60 fps</button></div></div>
@@ -391,7 +380,6 @@ function bind() {
   };
   $("#instupd").onclick = () => { api().install_update(); $("#updhelp").textContent = "Downloading..."; $("#instupd").style.display = "none"; };
   $("#startup").onchange = e => api().set_startup(e.target.checked);
-  $("#autopriv").onchange = async e => { const ok = await api().set_auto_privacy(Number(e.target.value)); toast(ok ? "Camera timer set" : "Couldn't reach the camera"); };
   $("#pickbg").onclick = async () => {
     const p = await api().pick_bg();
     if (p) { S.cfg.bg_image = p; S.cfg.bg_mode = "image"; syncAll(); }
@@ -422,7 +410,7 @@ function syncAll() {
   if (S.camera_sizes && S.camera_sizes.length) {
     const area = s => { const [w, h] = s.split("x").map(Number); return w * h; };
     const max = Math.max(...S.camera_sizes.map(area));
-    $$('select[data-key="capture_size"] option, select[data-key="vcam_size"] option').forEach(o => o.hidden = area(o.value) > max);
+    $$('select[data-key="vcam_size"] option').forEach(o => o.hidden = area(o.value) > max);
   }
   $("#trackhelp").textContent = c.track_style === "me"
     ? "Follows only your face. Anyone else walking by is ignored; if it can't see you it stays put."
@@ -581,12 +569,6 @@ async function init() {
   $("#ver").textContent = "v" + (S.version || "");
   $("#startup").checked = S.startup;
   bind(); renderGestures(); renderKeys(); syncAll(); poll();
-  const ap = await api().get_auto_privacy();
-  if (ap !== null && ap !== undefined) {
-    const sel = $("#autopriv");
-    if (![...sel.options].some(o => Number(o.value) === ap)) sel.insertAdjacentHTML("beforeend", `<option value="${ap}">${ap} seconds</option>`);
-    sel.value = String(ap);
-  }
 }
 window.addEventListener("DOMContentLoaded", init);
 document.addEventListener("keydown", e => { if (e.key === "F5" || (e.ctrlKey && e.key === "r")) e.preventDefault(); });

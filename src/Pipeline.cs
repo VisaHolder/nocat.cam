@@ -195,7 +195,7 @@ public sealed class Pipeline
                 // Up to 1080p out: read the camera's own 1080p mode - it runs up to 60 fps and keeps 30 in dim
                 // light (its 4K mode drops to 20 in dim light, which looked choppy). 1440p/4K out: the 4K mode.
                 bool small = c.vcam_size is "1920x1080" or "1280x720";
-                var ck = small ? "1920x1080@" + (c.fps == 60 ? 60 : 30) : c.capture_size + "@30";
+                var ck = small ? "1920x1080@" + (c.fps == 60 ? 60 : 30) : (Capture.LastSizes.FirstOrDefault() ?? "3840x2160") + "@30";
                 if (SnapshotRequested) ck = (Capture.LastSizes.FirstOrDefault() ?? "3840x2160") + "@30";
                 if (capKey != ck)
                 {
@@ -443,7 +443,7 @@ public sealed class Pipeline
                 {
                     if (ReferenceEquals(f.Print, mine.Print)) continue;
                     double look = FaceId.MatchScore(f.Print, me), mine2 = FaceId.MatchScore(mine.Print, me);
-                    if (look >= c.face_match + 0.15 || mine2 - look < 0.15) continue;   // only clear cases: you look clearly more like you
+                    if (look >= c.face_match || mine2 - look < 0.15) continue;   // only clear cases: not a match for you, and you look clearly more like you
                     if (others.Count > 0 && FaceId.MatchScore(f.Print, others) >= 0.9) continue;
                     _learnAt = now;
                     _p.OnLearnedOther?.Invoke(f.Print);
@@ -527,7 +527,7 @@ public sealed class Pipeline
         {
             if (_me is { } f)
             {
-                _p.Body = new BodyInfo(f.cx, f.top, f.bottom, 0.1, now, _meH, 0, _meHZ); _p.FaceFound = true;
+                _p.Body = new BodyInfo(f.cx, f.top, f.bottom, 0.1, now, now - _meHAt < 2 ? _meH : 0, 0, _meHZ); _p.FaceFound = true;
                 _track = (f.cx, f.cy); _trackAt = now;
                 return;
             }
@@ -633,7 +633,7 @@ public sealed class Pipeline
         {
             var d = p.rgb;
             long sum = 0; int n = 0;
-            for (int i = 0; i < d.Length; i += 21) { sum += d[i]; n++; }
+            for (int i = 0; i < d.Length; i += 20) { sum += d[i]; n++; }      // 20: lands on red, green and blue in turn
             double mean = (double)sum / Math.Max(1, n);
             if (mean >= 90) return p;
             double g = Math.Clamp(Math.Log(0.42) / Math.Log(Math.Max(0.02, mean / 255.0)), 0.35, 1);
