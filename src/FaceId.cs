@@ -70,7 +70,8 @@ public sealed unsafe class FaceId : IDisposable
             running_mode = 1, min_detection_confidence = 0.5f, min_suppression_threshold = 0.3f,
         };
         nint h, err = 0;
-        Mp.Check(MpFaceDetectorCreate(&dopt, &h, &err), err, "face detector");
+        try { Mp.Check(MpFaceDetectorCreate(&dopt, &h, &err), err, "face detector"); }
+        catch { _detModel.Free(); throw; }
         _det = h;
 
         var e = File.ReadAllBytes(embedderPath);
@@ -81,7 +82,13 @@ public sealed unsafe class FaceId : IDisposable
             running_mode = 1, l2_normalize = 1, quantize = 0,
         };
         err = 0;
-        Mp.Check(MpImageEmbedderCreate(&eopt, &h, &err), err, "face embedder");
+        try { Mp.Check(MpImageEmbedderCreate(&eopt, &h, &err), err, "face embedder"); }
+        catch
+        {
+            nint e2 = 0; MpFaceDetectorClose(_det, &e2); if (e2 != 0) Mp.MpErrorFree(e2);
+            _detModel.Free(); _embModel.Free();
+            throw;
+        }
         _emb = h;
     }
 

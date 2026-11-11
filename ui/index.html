@@ -224,6 +224,7 @@
     <h2>Background</h2>
     <div class="card">
       <div class="row"><div class="lbl">Effect</div><div class="seg" data-key="bg_mode"><button data-v="off">Off</button><button data-v="blur">Blur</button><button data-v="image">Picture</button></div></div>
+      <div class="row"><div class="lbl">Blur people behind me<small>Uses your saved face (Camera page, Only me, This is me): anyone else in view gets blurred too. Someone touching or overlapping you stays clear.</small></div><label class="tg"><input type="checkbox" data-key="bg_only_me"><span></span></label></div>
       <div class="row"><div class="lbl">Blur strength</div><div class="sl"><input type="range" min="1" max="10" step="1" data-key="bg_blur"><span class="val"></span></div></div>
       <div class="row"><div class="lbl">Picture<small id="bgname">nocat card</small></div><button class="btn" id="pickbg">Choose…</button><button class="btn ghost sm" id="clearbg">Use nocat card</button></div>
     </div>
@@ -234,7 +235,7 @@
     </div>
     <h2>Camera image <span class="soon">stored in the camera</span></h2>
     <div class="card" id="piclist"><div class="row"><div class="lbl" style="color:var(--dim)">Loading…</div></div></div>
-    <p class="note">The camera must be awake for these. HDR, low-light boost and noise reduction are coming next.</p>
+    <p class="note">The camera must be awake for these.</p>
   </section>
 
   <!-- SLEEP -->
@@ -262,6 +263,10 @@
     <h1>General</h1><p class="sub">App and virtual camera.</p>
     <div class="card">
       <div class="row"><div class="lbl">Start with Windows</div><label class="tg"><input type="checkbox" id="startup"><span></span></label></div>
+      <div class="row"><div class="lbl">Updates<small id="updhelp">Checks GitHub every 6 hours. Installs only while no app is using nocat.cam, so a call is never cut off.</small></div>
+        <div><button class="btn sm" id="chkupd">Check now</button> <button class="btn sm pri" id="instupd" style="display:none">Install</button></div></div>
+      <div class="row"><div class="lbl">Update by itself</div><label class="tg"><input type="checkbox" data-key="auto_update"><span></span></label></div>
+      <div class="row"><div class="lbl">Source code<small>github.com/VisaHolder/nocat.cam</small></div><button class="btn ghost sm" id="github">Open GitHub</button></div>
       <div class="row"><div class="lbl">Pop-up messages<small>"Position saved" and similar.</small></div><label class="tg"><input type="checkbox" data-key="notifications"><span></span></label></div>
     </div>
     <h2>Virtual camera</h2>
@@ -335,6 +340,16 @@ function bind() {
   $$("[data-a]").forEach(b => b.onclick = () => api().action(b.dataset.a));
   $("#q-track").onchange = () => api().action("toggle_tracking");
   $("#q-sleep").onchange = () => api().action("toggle_sleep");
+  $("#github").onclick = () => api().open_github();
+  $("#chkupd").onclick = async () => {
+    $("#updhelp").textContent = "Checking...";
+    const u = await api().check_update();
+    if (!u || !u.latest) { $("#updhelp").textContent = "Couldn't reach GitHub."; return; }
+    $("#updhelp").textContent = u.newer ? `nocat.cam ${u.latest} is out (you have ${u.current}).` : `You're on the newest version (${u.current}).`;
+    $("#instupd").style.display = u.newer ? "" : "none";
+    $("#instupd").textContent = "Install " + u.latest;
+  };
+  $("#instupd").onclick = () => { api().install_update(); $("#updhelp").textContent = "Downloading..."; $("#instupd").style.display = "none"; };
   $("#startup").onchange = e => api().set_startup(e.target.checked);
   $("#autopriv").onchange = async e => { const ok = await api().set_auto_privacy(Number(e.target.value)); toast(ok ? "Camera timer set" : "Couldn't reach the camera"); };
   $("#pickbg").onclick = async () => {
@@ -482,6 +497,7 @@ async function poll() {
     $("#stext").textContent = st.text;
     $("#q-track").checked = st.tracking;
     $("#q-sleep").checked = st.asleep;
+    if (st.update) $("#updhelp").textContent = st.update.startsWith("failed") ? "Update " + st.update : st.update[0].toUpperCase() + st.update.slice(1) + "...";
     $("#mehelp").textContent = !st.faces ? "Look at the camera and press This is me (do it 3-4 times: straight, a bit left, a bit right)."
       : `${st.faces} look${st.faces > 1 ? "s" : ""} saved` + (st.face_found === true ? " · following you" : st.face_found === false ? " · can't see you, holding still" : "");
     if (Math.abs((S.cfg.zoom || 1) - st.zoom) > 0.001) { S.cfg.zoom = st.zoom; syncAll(); }

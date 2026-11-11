@@ -121,7 +121,8 @@ public sealed class Bridge
                     ["asleep"] = _app.Asleep,
                     ["zoom"] = c.zoom,
                     ["faces"] = c.Locked(() => c.me_faces.Count),
-                    ["face_found"] = v.FaceLock ? v.FaceFound : (bool?)null,
+                    ["update"] = Updater.State,
+                    ["face_found"] = v.FaceLock && !_app.Asleep && _app.TrackingOn ? v.FaceFound : (bool?)null,
                     ["positions"] = c.Locked(() => JsonSerializer.SerializeToNode(c.positions)),
                     ["hotkeys_failed"] = JsonSerializer.SerializeToNode(_app.Keys.Failed),
                 };
@@ -135,7 +136,6 @@ public sealed class Bridge
                 if (key == "fixed_exposure") _app.ApplyExposure(c.fixed_exposure);
                 if (key == "track_style" && _app.TrackingOn) _app.Run("tracking");   // switch style straight away
                 return c.ToJson();                       // the page re-reads: changing one setting can adjust another
-                return true;
             }
             case "set_gesture":
                 c.Locked(() => c.gesture_actions[S(a, 0)] = Actions.All.ContainsKey(S(a, 1)) ? S(a, 1) : "none");
@@ -162,6 +162,15 @@ public sealed class Bridge
             case "set_auto_privacy": return _app.Cam.SetAutoPrivacy((int)a[0]!.GetValue<double>());
             case "save_position": return JsonSerializer.SerializeToNode(_app.SavePosition(S(a, 0)));
             case "clear_position": c.Locked(() => c.positions.Remove(S(a, 0))); c.Save(); return true;
+            case "check_update":
+            {
+                var r = Task.Run(Updater.Latest).GetAwaiter().GetResult();
+                return new JsonObject { ["current"] = Updater.Current, ["latest"] = r?.Version, ["newer"] = r != null && Updater.IsNewer(r.Version) };
+            }
+            case "install_update": _ = Task.Run(() => Updater.Install(_app)); return true;
+            case "open_github":
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/" + Updater.Repo) { UseShellExecute = true });
+                return true;
             case "set_startup": App.StartupEnabled = a[0]!.GetValue<bool>(); return true;
             case "pick_bg":
             {

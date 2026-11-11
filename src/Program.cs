@@ -34,7 +34,35 @@ static class Program
             return;
         }
 
-        using var single = new Mutex(true, "nocat.cam.single", out bool first);
+        int fromIdx = Array.IndexOf(args, "--updated-from");
+        if (fromIdx >= 0 && fromIdx + 1 < args.Length && int.TryParse(args[fromIdx + 1], out int oldPid))
+        {
+            // just updated: let the old copy close (and let go of the camera) first
+            try { using var old = System.Diagnostics.Process.GetProcessById(oldPid); old.WaitForExit(20000); } catch { }
+        }
+        if (args.Length >= 2 && args[0] == "--updatetest")
+        {
+            // download the latest release into a scratch folder (no restart) to prove the updater works
+            try
+            {
+                var r = Updater.Latest().GetAwaiter().GetResult() ?? throw new Exception("no release with a zip");
+                var exe = Updater.Download(r, args[1]).GetAwaiter().GetResult();
+                File.WriteAllText(Path.Combine(args[1], "updatetest.txt"), $"PASS {r.Version} sha256 {(r.Sha256 != null ? "checked" : "missing")} -> {exe} ({new FileInfo(exe).Length} bytes, version {System.Diagnostics.FileVersionInfo.GetVersionInfo(exe).ProductVersion})");
+                Environment.Exit(0);
+            }
+            catch (Exception e) { File.WriteAllText(Path.Combine(args[1], "updatetest.txt"), "FAIL " + e.Message); Environment.Exit(1); }
+            return;
+        }
+
+        Mutex single;
+        bool first;
+        for (int i = 0; ; i++)
+        {
+            single = new Mutex(true, "nocat.cam.single", out first);
+            if (first || fromIdx < 0 || i >= 20) break;
+            single.Dispose(); Thread.Sleep(500);              // old copy still shutting down
+        }
+        using var _single = single;
         if (!first)
         {
             // already running: opening it again = open its settings
@@ -83,6 +111,8 @@ static class Program
         app.Start();
         Log.Instance.Info($"nocat.cam {Application.ProductVersion.Split('+')[0]} started");
         if (firstRun || args.Contains("--settings")) { app.Cfg.Save(); ShowSettings(); }
+        if (fromIdx >= 0) app.Say($"Updated to {Updater.Current}");
+        Updater.StartAuto(app, ui);
 
         Application.Run();
     }

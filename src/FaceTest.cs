@@ -9,6 +9,15 @@ static class FaceTest
     public static int Run(string outPath)
     {
         var lines = new List<string>();
+        // blur-everyone-but-me: two people in a mask, keep the one under the face
+        {
+            const int mw = 64, mh = 36; var m = new float[mw * mh];
+            for (int y = 5; y < 36; y++) { for (int x = 5; x < 20; x++) m[y * mw + x] = 1; for (int x = 40; x < 60; x++) m[y * mw + x] = 0.9f; }
+            var ka = Pipeline.KeepOneForTest(m, mw, mh, (0.2, 0.3));      // face over the left person
+            var kb = Pipeline.KeepOneForTest(m, mw, mh, null);            // no face: biggest person
+            bool ok = ka[10 * mw + 10] == 1 && ka[10 * mw + 50] == 0 && kb[10 * mw + 50] > 0 && kb[10 * mw + 10] == 0;
+            lines.Add($"{(ok ? "PASS" : "FAIL")} keep only me in the blur mask");
+        }
         string here = AppContext.BaseDirectory;
         using var cap = Capture.Open("EMEET PIXY", 1920, 1080, 30, out var why);
         if (cap == null) { File.WriteAllText(outPath, "FAIL camera: " + why); return 1; }

@@ -19,6 +19,9 @@ public sealed class App : IDisposable
     public string? AutoSlept { get; private set; }  // "away" / "unused" when we put it to sleep ourselves
     public int? Mode { get; private set; }
     public bool Asleep => CamAsleep || SoftAsleep;
+    /// <summary>An app (Discord, OBS...) is showing nocat.cam right now.</summary>
+    public bool InUse => Cfg.virtual_cam && Video.HasReaders;
+    public void Say(string text) => Notify?.Invoke(text);
     /// <summary>nocat.cam is steering the camera to keep your whole body in frame (camera in manual).</summary>
     public bool BodyTracking { get; private set; }
     public bool TrackingOn => BodyTracking || Mode == Pixy.Tracking;
@@ -67,13 +70,24 @@ public sealed class App : IDisposable
         return RunningPrograms().Overlaps(wanted.Select(w => w.ToLowerInvariant().Replace(".exe", "")));
     }
 
-    static (double at, HashSet<string> names) _procCache = (-10, new());
+    static (double at, HashSet<string> names) _procCache = (-10, ProcessNames());
+    static int _procBusy;
+    static HashSet<string> ProcessNames() => Process.GetProcesses().Select(p => { try { return p.ProcessName.ToLowerInvariant(); } catch { return ""; } }).ToHashSet();
     static HashSet<string> RunningPrograms()
     {
-        if (Now - _procCache.at < 3) return _procCache.names;
-        var names = Process.GetProcesses().Select(p => { try { return p.ProcessName.ToLowerInvariant(); } catch { return ""; } }).ToHashSet();
-        _procCache = (Now, names);
-        return names;
+        if (Now - _procCache.at >= 3 && Interlocked.Exchange(ref _procBusy, 1) == 0)
+        {
+            Task.Run(() =>
+            {
+                try
+                {
+                    var names = Process.GetProcesses().Select(p => { try { return p.ProcessName.ToLowerInvariant(); } catch { return ""; } }).ToHashSet();
+                    _procCache = (Now, names);
+                }
+                finally { Interlocked.Exchange(ref _procBusy, 0); }
+            });
+        }
+        return _procCache.names;
     }
 
     // ---- actions --------------------------------------------------------------------
@@ -143,7 +157,12 @@ public sealed class App : IDisposable
         {
             case "tracking": StartTracking(); break;
             case "manual": BodyTracking = false; Cam.SetMode(Pixy.Manual); break;
-            case "remember_me": Video.RememberRequested = true; break;
+            case "remember_me":
+                if (!Cfg.virtual_cam) { Notify?.Invoke("Turn the nocat.cam virtual camera on first"); break; }
+                if (Asleep) { Notify?.Invoke("Wake the camera first"); break; }
+                if (!Video.HasReaders) { Notify?.Invoke("Open nocat.cam in Discord (or any app) first, so it can see you"); break; }
+                Video.RememberRequested = true;
+                break;
             case "forget_me": Cfg.Locked(() => Cfg.me_faces.Clear()); Cfg.Save(); Notify?.Invoke("Forgot your face"); break;
             case "zoom_in" or "zoom_out" or "zoom_reset":
                 c.zoom = action == "zoom_reset" ? 1 : Math.Round(Math.Clamp(c.zoom + (action == "zoom_in" ? c.zoom_step : -c.zoom_step), 1, 3), 2);
@@ -164,7 +183,7 @@ public sealed class App : IDisposable
     /// <summary>Tracking on, in the chosen style: the camera's own face tracking, or nocat.cam's whole-body tracking.</summary>
     void StartTracking()
     {
-        if (Cfg.track_style is "body" or "me") { Cam.SetMode(Pixy.Manual); BodyTracking = true; }
+        if (Cfg.track_style is "body" or "me" && Cfg.virtual_cam) { Cam.SetMode(Pixy.Manual); BodyTracking = true; }
         else { BodyTracking = false; Cam.SetMode(Pixy.Tracking); }
     }
 
@@ -182,7 +201,7 @@ public sealed class App : IDisposable
         {
             Thread.Sleep(100);
             Video.WantBody = BodyTracking && !Asleep;
-            Video.FaceLock = BodyTracking && Cfg.track_style == "me" && Cfg.me_faces.Count > 0;
+            Video.FaceLock = BodyTracking && Cfg.track_style == "me";      // no saved face yet = hold still
             if (!BodyTracking || Asleep) continue;
             var b = Video.Body;
             double now = Now;
@@ -289,7 +308,8 @@ public sealed class App : IDisposable
     void AutoLoop()
     {
         double unusedSince = Now;
-        bool hadUsers = false;
+        var seen = new Dictionary<int, double>();          // app -> when it last used nocat.cam
+        HashSet<int>? atSleep = null;                      // apps that were using it when it went to sleep
         while (!_quit)
         {
             Thread.Sleep(3000);
@@ -304,12 +324,17 @@ public sealed class App : IDisposable
                     users = VcamUsers.Readers();
                     Video.HasReaders = users.Count > 0;     // nobody watching: send 2 pictures a second
                     if (users.Count > 0) unusedSince = now;
-                    startedUsing = users.Count > 0 && !hadUsers;
-                    hadUsers = users.Count > 0;
+                    foreach (var u in users) seen[u] = now;
+                    foreach (var k in seen.Where(kv => now - kv.Value > 120).Select(kv => kv.Key).ToList()) seen.Remove(k);
                 }
+                // Apps that were already using nocat.cam when it fell asleep don't wake it: Discord lets go of a
+                // dark camera and grabs it again, which used to look like "an app started using it".
+                if (Asleep && atSleep == null) atSleep = seen.Where(kv => now - kv.Value < 30).Select(kv => kv.Key).ToHashSet();
+                if (!Asleep) atSleep = null;
+                if (users != null && atSleep != null) startedUsing = users.Any(u => !atSleep.Contains(u));
 
                 if (AutoSlept == "away" && now - Video.LastPerson < 6) { Do("wake", "you're back"); continue; }
-                if (Asleep && users is { Count: > 0 } && (AutoSlept == "unused" || (startedUsing && c.auto_wake_on_use)))
+                if (Asleep && startedUsing && (AutoSlept == "unused" || c.auto_wake_on_use))
                 { Do("wake", "an app started using nocat.cam"); continue; }
                 if (Asleep) continue;
 

@@ -52,7 +52,8 @@ public sealed class Pipeline
     /// <summary>Last face-lock result for the settings page: true = following you, false = can't see you.</summary>
     public volatile bool FaceFound;
     /// <summary>Latest person box in the picture, as fractions 0..1: centre x, top y, bottom y, share of picture.</summary>
-    public (double cx, double top, double bottom, double area, double at) Body { get; internal set; }
+    public BodyInfo Body { get => _body; internal set => _body = value; }
+    volatile BodyInfo _body = new(0.5, 0, 1, 0, -10);
 
     static readonly Stopwatch Clock = Stopwatch.StartNew();
     static double Now => Clock.Elapsed.TotalSeconds;
@@ -324,54 +325,120 @@ public sealed class Pipeline
 
         public void ClearGesture() { _held = null; }
 
+        (double cx, double cy, double top, double bottom)? _me;
+        double _meAt = -10, _meChecked = -10, _faceRetryAt, _scoreLogAt;
+
         /// <summary>
-        /// Face lock: find faces, keep the one that best matches your saved fingerprints (and is near where
-        /// you were), and report it as the person to follow. No match = report nobody, so the camera holds
-        /// still instead of swinging to someone else.
+        /// Find your face among all faces (and handle "remember me"). Your face is the one that looks like
+        /// your saved fingerprints; one right where you just were only has to look roughly like you
+        /// (turned head, bad light), one somewhere else has to look clearly like you.
         /// </summary>
-        void FaceStep(Config c, double now)
+        void FindMe(Config c, double now)
         {
+            _meChecked = now;
             string here = AppContext.BaseDirectory;
             _faces ??= new FaceId(Path.Combine(here, "models", "face_detector.tflite"), Path.Combine(here, "models", "face_embedder.tflite"));
             var (rgb, rw, rh) = Nv12.SmallRgb(_buf, _w, _h, _zoom, 640);
-            var faces = _faces.Faces(rgb, rw, rh);
+            bool remember = _p.RememberRequested;
+            _p.RememberRequested = false;
+            List<FaceId.Face> faces;
+            try { faces = _faces.Faces(rgb, rw, rh); }
+            catch { if (remember) _p.OnRemembered?.Invoke(null); throw; }
             if (faces.Count > 0) _p.LastPerson = now;
 
-            if (_p.RememberRequested)
+            if (remember)
             {
-                _p.RememberRequested = false;
-                // the biggest face nearest the middle is you
-                var you = faces.OrderByDescending(f => f.W * f.H * (1.5 - Math.Abs((f.X + f.W / 2.0) / rw - 0.5))).FirstOrDefault();
-                _p.OnRemembered?.Invoke(faces.Count == 0 ? null : you.Print);
-                if (faces.Count > 0) _lastFace = ((you.X + you.W / 2.0) / rw, (you.Y + you.H / 2.0) / rh);
+                if (faces.Count == 0) _p.OnRemembered?.Invoke(null);
+                else
+                {
+                    // the biggest face nearest the middle is you
+                    var you = faces.OrderByDescending(f => f.W * f.H * (1.5 - Math.Abs((f.X + f.W / 2.0) / rw - 0.5))).First();
+                    _lastFace = ((you.X + you.W / 2.0) / rw, (you.Y + you.H / 2.0) / rh);
+                    _meAt = now;
+                    _p.OnRemembered?.Invoke(you.Print);
+                }
             }
-            if (!_p.FaceLock) return;
 
             var me = c.Locked(() => c.me_faces.ToList());
+            if (me.Count == 0) { _me = null; return; }
             FaceId.Face? best = null; double bestScore = 0;
+            var scores = new List<double>();
             foreach (var f in faces)
             {
                 double cx = (f.X + f.W / 2.0) / rw, cy = (f.Y + f.H / 2.0) / rh;
                 double near = Math.Sqrt((cx - _lastFace.cx) * (cx - _lastFace.cx) + (cy - _lastFace.cy) * (cy - _lastFace.cy));
-                // the face right where you just were only has to look roughly like you (turned head, bad light);
-                // a face somewhere else has to look clearly like you before the camera goes there
                 double look = FaceId.MatchScore(f.Print, me);
-                double need = near < 0.12 ? c.face_match - 0.25 : c.face_match;
+                double need = near < 0.12 && now - _meAt < 1 ? c.face_match - 0.25 : c.face_match;
                 double score = look - need - 0.1 * near;
                 if (look >= need && (best == null || score > bestScore)) { bestScore = score; best = f; }
+                scores.Add(look);
+            }
+            if (scores.Count >= 2 && now - _scoreLogAt > 20)
+            {
+                // two or more faces in view: log how alike each is to you, to tune the match level
+                _scoreLogAt = now;
+                Log.Instance.Info("faces in view, likeness to you: " + string.Join(", ", scores.Select(x => x.ToString("0.00"))));
             }
             if (best is { } b)
             {
                 _lastFace = ((b.X + b.W / 2.0) / rw, (b.Y + b.H / 2.0) / rh);
-                double top = Math.Max(0, (b.Y - b.H * 0.6) / rh);              // top of the head (above the face box)
-                _p.Body = (_lastFace.cx, top, Math.Min(1, (b.Y + b.H * 3.0) / rh), 0.1, now);
-                _p.FaceFound = true;
+                _me = (_lastFace.cx, _lastFace.cy, Math.Max(0, (b.Y - b.H * 0.6) / rh), Math.Min(1, (b.Y + b.H * 3.0) / rh));
+                _meAt = now;
             }
-            else
+            else _me = null;
+        }
+
+        /// <summary>Face lock: follow your face; nobody matching = hold still (never swing to someone else).</summary>
+        void FollowMe(double now)
+        {
+            if (_me is { } m) { _p.Body = (m.cx, m.top, m.bottom, 0.1, now); _p.FaceFound = true; }
+            else { _p.Body = (0.5, 0, 1, 0, now); _p.FaceFound = false; }
+        }
+
+        /// <summary>
+        /// Keep only one person in the background mask: the outline your face is in (or, if your face
+        /// hasn't been seen for a few seconds, the biggest outline). Everyone else gets blurred too.
+        /// </summary>
+        internal static float[] KeepOne(float[] m, int w, int h, (double x, double y)? seed)
+        {
+            var lab = new int[w * h];
+            var sizes = new List<int> { 0 };
+            var stack = new Stack<int>();
+            for (int i = 0; i < m.Length; i++)
             {
-                _p.Body = (0.5, 0, 1, 0, now);                                 // nobody to follow: hold still
-                _p.FaceFound = false;
+                if (lab[i] != 0 || m[i] <= 0.25f) continue;
+                int id = sizes.Count, n = 0;
+                lab[i] = id; stack.Push(i);
+                while (stack.Count > 0)
+                {
+                    int p = stack.Pop(); n++;
+                    int x = p % w, y = p / w;
+                    if (x > 0 && lab[p - 1] == 0 && m[p - 1] > 0.25f) { lab[p - 1] = id; stack.Push(p - 1); }
+                    if (x < w - 1 && lab[p + 1] == 0 && m[p + 1] > 0.25f) { lab[p + 1] = id; stack.Push(p + 1); }
+                    if (y > 0 && lab[p - w] == 0 && m[p - w] > 0.25f) { lab[p - w] = id; stack.Push(p - w); }
+                    if (y < h - 1 && lab[p + w] == 0 && m[p + w] > 0.25f) { lab[p + w] = id; stack.Push(p + w); }
+                }
+                sizes.Add(n);
             }
+            if (sizes.Count <= 2) return m;                     // one person (or nobody): nothing to do
+            int keep = 0;
+            if (seed is { } sd)
+            {
+                // the outline under your face, or the nearest one within a short distance
+                int sx = Math.Clamp((int)(sd.x * w), 0, w - 1), sy = Math.Clamp((int)(sd.y * h), 0, h - 1);
+                int r = Math.Max(2, w / 10), bestD = int.MaxValue;
+                for (int y = Math.Max(0, sy - r); y <= Math.Min(h - 1, sy + r); y++)
+                    for (int x = Math.Max(0, sx - r); x <= Math.Min(w - 1, sx + r); x++)
+                    {
+                        int l = lab[y * w + x]; if (l == 0) continue;
+                        int d = (x - sx) * (x - sx) + (y - sy) * (y - sy);
+                        if (d < bestD) { bestD = d; keep = l; }
+                    }
+            }
+            if (keep == 0) for (int l = 1; l < sizes.Count; l++) if (keep == 0 || sizes[l] > sizes[keep]) keep = l;
+            var o = new float[m.Length];
+            for (int i = 0; i < m.Length; i++) o[i] = lab[i] == keep || lab[i] == 0 ? m[i] : 0;
+            return o;
         }
 
         void Run()
@@ -388,13 +455,25 @@ public sealed class Pipeline
                 {
                     if (now < nextTry) continue;
                     var c = _cfg!;
-                    if (_presence && (_p.FaceLock || _p.RememberRequested)) FaceStep(c, now);
+                    bool lockOn = _presence && _p.FaceLock;
+                    bool onlyMe = _mask && c.bg_only_me && c.bg_mode != "off" && c.Locked(() => c.me_faces.Count) > 0;
+                    if ((lockOn || _p.RememberRequested || (onlyMe && now - _meChecked > 0.15)) && now >= _faceRetryAt)
+                    {
+                        try { FindMe(c, now); }
+                        catch (Exception e)
+                        {
+                            log.Info("face check failed: " + e.Message);
+                            _faceRetryAt = now + 30; _me = null;
+                            if (_p.RememberRequested) { _p.RememberRequested = false; _p.OnRemembered?.Invoke(null); }
+                        }
+                    }
+                    if (lockOn) FollowMe(now);
                     if (_mask)
                     {
                         _seg ??= new Segmenter(Path.Combine(here, "models", "selfie_segmenter.tflite"));
                         var (sr, sw, sh) = Nv12.SmallRgb(_buf, _w, _h, _zoom, 256);
                         var (m, mw, mh) = _seg.Mask(sr, sw, sh, (long)(now * 1000));
-                        Mask = (m, mw, mh);
+                        Mask = (onlyMe ? KeepOne(m, mw, mh, now - _meAt < 3 ? (_lastFace.cx, _lastFace.cy) : null) : m, mw, mh);
                         if (_presence)
                         {
                             var box = PersonBox(m, mw, mh);
@@ -437,6 +516,8 @@ public sealed class Pipeline
             if (_t.Join(3000)) { _rec?.Dispose(); _seg?.Dispose(); _faces?.Dispose(); }   // still busy: let the process clean up
         }
     }
+
+    internal static float[] KeepOneForTest(float[] m, int w, int h, (double x, double y)? seed) => Ai.KeepOne(m, w, h, seed);
 
     /// <summary>Load a picture without keeping the file locked (so it can be moved or edited).</summary>
     public static Bitmap LoadBitmap(string path)
@@ -502,4 +583,10 @@ public sealed class Pipeline
         _pics[key] = result;
         return result;
     }
+}
+
+/// <summary>Where the person is (fractions 0..1): centre x, top y, bottom y, share of picture, and when it was measured.</summary>
+public sealed record BodyInfo(double cx, double top, double bottom, double area, double at)
+{
+    public static implicit operator BodyInfo((double cx, double top, double bottom, double area, double at) t) => new(t.cx, t.top, t.bottom, t.area, t.at);
 }
