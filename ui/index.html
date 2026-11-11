@@ -154,8 +154,10 @@
   <section class="page on" id="p-control">
     <h1>Camera</h1><p class="sub">Quick controls. Everything saves as you change it.</p>
     <div class="card">
-      <div class="row"><div class="lbl">Tracking<small>Follow you around. Your open palm toggles this too.</small></div>
+      <div class="row"><div class="lbl">Tracking<small>Follow you around. Your open palm toggles the camera's own tracking too.</small></div>
         <label class="tg"><input type="checkbox" id="q-track"><span></span></label></div>
+      <div class="row"><div class="lbl">Tracking style<small id="trackhelp"></small></div>
+        <div class="seg" data-key="track_style"><button data-v="camera">Face</button><button data-v="body">Whole body</button></div></div>
       <div class="row"><div class="lbl">Asleep<small>Privacy or soft sleep, as set on the Sleep page.</small></div>
         <label class="tg"><input type="checkbox" id="q-sleep"><span></span></label></div>
       <div class="row"><div class="lbl">Background</div>
@@ -223,7 +225,7 @@
     </div>
     <h2>Smoothness</h2>
     <div class="card">
-      <div class="row"><div class="lbl">Smooth 30 fps<small>Fixes exposure so dim rooms don't drop the camera to 20 fps. The picture may look a bit darker, so add light or raise Gain.</small></div>
+      <div class="row"><div class="lbl">Fixed exposure<small>Only for a well-lit room: keeps a steady 30/60 fps, but a dim room goes dark. Your PIXY can't brighten with gain on its own, so in dim light auto exposure (off) looks best at about 20 fps.</small></div>
         <label class="tg"><input type="checkbox" data-key="fixed_exposure"><span></span></label></div>
     </div>
     <h2>Camera image <span class="soon">stored in the camera</span></h2>
@@ -244,6 +246,11 @@
       <div class="row"><div class="lbl">Sleep when no app uses nocat.cam</div><div class="sl"><input type="range" min="0" max="60" step="1" data-key="auto_sleep_unused_min"><span class="val" data-fmt="min"></span></div></div>
       <div class="row"><div class="lbl">Wake when an app starts using nocat.cam</div><label class="tg"><input type="checkbox" data-key="auto_wake_on_use"><span></span></label></div>
     </div>
+    <h2>The camera's own timer</h2>
+    <div class="card">
+      <div class="row"><div class="lbl">Camera auto-privacy<small>Built into the PIXY: it turns away by itself after this long. Set to Never if nocat.cam's sleep handles it.</small></div>
+        <select id="autopriv"><option value="0">Never</option><option value="10">10 seconds</option><option value="60">1 minute</option><option value="900">15 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option></select></div>
+    </div>
   </section>
 
   <!-- GENERAL -->
@@ -258,6 +265,8 @@
       <div class="row"><div class="lbl">nocat.cam virtual camera<small>Pick "nocat.cam" in Discord. Gestures and effects need this on; off = Discord/OBS use the PIXY directly.</small></div><label class="tg"><input type="checkbox" data-key="virtual_cam"><span></span></label></div>
       <div class="row"><div class="lbl">Take from camera at</div><select data-key="capture_size"><option>3840x2160</option><option>2560x1440</option><option>1920x1080</option></select></div>
       <div class="row"><div class="lbl">Send to apps at<small>Discord sends at most 1080p (720p without Nitro), so 1080p is best for Discord. 4K is for OBS/recording; blur at 4K is heavy.</small></div><select data-key="vcam_size"><option>3840x2160</option><option>2560x1440</option><option>1920x1080</option><option>1280x720</option></select></div>
+      <div class="row"><div class="lbl">Frame rate<small id="fpshelp"></small></div>
+        <div class="seg" data-key="fps" id="fpsseg"><button data-v="30">30 fps</button><button data-v="60">60 fps</button></div></div>
     </div>
     <p class="note">Don't start OBS's own virtual camera while nocat.cam is on. They share it.</p>
   </section>
@@ -294,14 +303,21 @@ $$("#nav a").forEach(a => a.onclick = () => {
   if (a.dataset.p === "picture") loadPicture();
 });
 
-function set(key, value) { S.cfg[key] = value; api().set(key, value); syncAll(); }
+async function set(key, value) {
+  S.cfg[key] = value; syncAll();
+  const cfg = await api().set(key, value);
+  if (cfg && typeof cfg === "object") { S.cfg = cfg; syncAll(); }    // e.g. 4K out switches 60 fps back to 30
+}
 
 // generic bindings
 function bind() {
   $$("[data-key]").forEach(el => {
     const key = el.dataset.key;
     if (el.classList.contains("seg")) {
-      $$("button", el).forEach(b => b.onclick = () => set(key, b.dataset.v));
+      $$("button", el).forEach(b => b.onclick = () => {
+        if (b.disabled) return;
+        set(key, key === "fps" ? Number(b.dataset.v) : b.dataset.v);
+      });
     } else if (el.type === "checkbox") {
       el.onchange = () => set(key, el.checked);
     } else if (el.type === "range") {
@@ -316,6 +332,7 @@ function bind() {
   $("#q-track").onchange = () => api().action("toggle_tracking");
   $("#q-sleep").onchange = () => api().action("toggle_sleep");
   $("#startup").onchange = e => api().set_startup(e.target.checked);
+  $("#autopriv").onchange = async e => { const ok = await api().set_auto_privacy(Number(e.target.value)); toast(ok ? "Camera timer set" : "Couldn't reach the camera"); };
   $("#pickbg").onclick = async () => {
     const p = await api().pick_bg();
     if (p) { S.cfg.bg_image = p; S.cfg.bg_mode = "image"; syncAll(); }
@@ -333,7 +350,16 @@ function syncAll() {
     else if (el.type === "range") { if (document.activeElement !== el) el.value = v; showVal(el); }
     else if (el.tagName === "SELECT" || el.dataset.type === "text") { if (document.activeElement !== el) el.value = v ?? ""; }
   });
+  const big = c.vcam_size === "3840x2160" || c.vcam_size === "2560x1440";
+  const b60 = $('#fpsseg button[data-v="60"]');
+  b60.disabled = big; b60.style.opacity = big ? .35 : 1;
+  $("#fpshelp").textContent = big ? "4K and 1440p run at 30 fps (the camera's limit). Pick 1080p or 720p for 60."
+    : c.fps === 60 ? "60 fps uses the camera's own 1080p mode. It needs a bright room: in dim light the camera slows itself to 20-30 fps."
+    : "1080p and 720p can also do 60 fps.";
   $("#bgname").textContent = c.bg_image ? c.bg_image.split(/[\\/]/).pop() : "nocat card";
+  $("#trackhelp").textContent = c.track_style === "body"
+    ? "nocat.cam follows your whole outline, so crouching or turning away doesn't lose you."
+    : "The PIXY's own face tracking (fastest, but loses you when your face drops out of view).";
   $("#stylehelp").textContent = c.sleep_style === "soft"
     ? "Camera stays awake. Discord sees the asleep card, and a gesture can wake it."
     : "Camera turns away and stops seeing. Wake it with a key or the tray.";
@@ -460,6 +486,12 @@ async function init() {
   $("#ver").textContent = "v" + (S.version || "");
   $("#startup").checked = S.startup;
   bind(); renderGestures(); renderKeys(); syncAll(); poll();
+  const ap = await api().get_auto_privacy();
+  if (ap !== null && ap !== undefined) {
+    const sel = $("#autopriv");
+    if (![...sel.options].some(o => Number(o.value) === ap)) sel.insertAdjacentHTML("beforeend", `<option value="${ap}">${ap} seconds</option>`);
+    sel.value = String(ap);
+  }
 }
 window.addEventListener("DOMContentLoaded", init);
 document.addEventListener("keydown", e => { if (e.key === "F5" || (e.ctrlKey && e.key === "r")) e.preventDefault(); });

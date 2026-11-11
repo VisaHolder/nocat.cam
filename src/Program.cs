@@ -8,6 +8,21 @@ static class Program
     static void Main(string[] args)
     {
         if (args.Length >= 2 && args[0] == "--selftest") { Environment.Exit(SelfTest.Run(args[1])); return; }
+        if (args.Length >= 2 && args[0] == "--speedtest") { Environment.Exit(SpeedTest.Run(args[1])); return; }
+        if (args.Length >= 1 && args[0] == "--auto-exposure")
+        {
+            // repair tool: put the camera back on automatic exposure
+            using var cap = Capture.Open("EMEET PIXY", 1920, 1080, 30, out _);
+            if (cap == null) { Environment.Exit(1); return; }
+            bool done = false;                       // the camera only takes changes while pictures flow
+            var reader = new Thread(() => { var f = new byte[cap.Width * cap.Height * 3 / 2]; while (!done) cap.Read(f); });
+            reader.Start();
+            for (int i = 0; i < 10; i++) Thread.Sleep(100);
+            bool ok = PictureControls.Set(cap, "Exposure", -5, auto: true);
+            done = true; reader.Join();
+            Environment.Exit(ok ? 0 : 1);
+            return;
+        }
 
         using var single = new Mutex(true, "nocat.cam.single", out bool first);
         if (!first)

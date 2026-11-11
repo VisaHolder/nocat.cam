@@ -117,7 +117,7 @@ public sealed class Bridge
                 {
                     ["level"] = level switch { "ok" => "ok", "sleep" => "bad", "warn" => "warn", _ => "" },
                     ["text"] = text,
-                    ["tracking"] = _app.Mode == Pixy.Tracking,
+                    ["tracking"] = _app.TrackingOn,
                     ["asleep"] = _app.Asleep,
                     ["zoom"] = c.zoom,
                     ["positions"] = JsonSerializer.SerializeToNode(c.positions),
@@ -131,6 +131,8 @@ public sealed class Bridge
                 if (!c.Set(key, a[1]?.DeepClone())) return false;
                 c.Save();
                 if (key == "fixed_exposure") _app.ApplyExposure(c.fixed_exposure);
+                return c.ToJson();                       // the page re-reads: changing one setting can adjust another
+                if (key == "track_style" && _app.TrackingOn) _app.Run("tracking");   // switch style straight away
                 return true;
             }
             case "set_gesture":
@@ -154,6 +156,8 @@ public sealed class Bridge
             }
             case "resume_hotkeys": _app.Keys.Bind(c.hotkeys); return true;
             case "action": _app.Run(S(a, 0)); return true;
+            case "get_auto_privacy": return _app.Cam.GetAutoPrivacy();
+            case "set_auto_privacy": return _app.Cam.SetAutoPrivacy((int)a[0]!.GetValue<double>());
             case "save_position": return JsonSerializer.SerializeToNode(_app.SavePosition(S(a, 0)));
             case "clear_position": c.positions.Remove(S(a, 0)); c.Save(); return true;
             case "set_startup": App.StartupEnabled = a[0]!.GetValue<bool>(); return true;

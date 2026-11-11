@@ -48,7 +48,7 @@ public sealed class Tray : IDisposable
 
     void Refresh()
     {
-        _track.Checked = _app.Mode == Pixy.Tracking;
+        _track.Checked = _app.TrackingOn;
         _sleep.Checked = _app.Asleep;
         _bg.Checked = _app.Cfg.bg_mode != "off";
         _gest.Checked = _app.Cfg.gestures_enabled;

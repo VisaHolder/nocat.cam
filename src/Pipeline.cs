@@ -30,13 +30,20 @@ public sealed class Pipeline
     volatile bool _stop;
 
     public string Status { get; private set; } = "starting";
-    public double LastPerson { get; private set; } = Now;
+    public double LastPerson { get; internal set; } = Now;
     public double OpenedAt { get; private set; } = Now;
     public bool Streaming { get; private set; }
     public double Fps { get; private set; }
     public volatile bool HasReaders = true;
     public string? CaptureInfo { get; private set; }
     public Capture? Camera { get; private set; }
+    /// <summary>Raised when the camera is (re)opened - the app re-applies exposure for the frame rate.</summary>
+    public event Action? CameraOpened;
+
+    /// <summary>Set by the app while whole-body tracking is on: measure where the person is 5 times a second.</summary>
+    public volatile bool WantBody;
+    /// <summary>Latest person box in the picture, as fractions 0..1: centre x, top y, bottom y, share of picture.</summary>
+    public (double cx, double top, double bottom, double area, double at) Body { get; internal set; }
 
     static readonly Stopwatch Clock = Stopwatch.StartNew();
     static double Now => Clock.Elapsed.TotalSeconds;
@@ -48,7 +55,14 @@ public sealed class Pipeline
         _onGesture = onGesture; _onStatus = onStatus;
     }
 
-    public void Start() { _thread = new Thread(Run) { IsBackground = true, Name = "pipeline" }; _thread.Start(); }
+    Ai _ai = null!;
+
+    public void Start()
+    {
+        _ai = new Ai(this);
+        _thread = new Thread(Run) { IsBackground = true, Name = "pipeline", Priority = ThreadPriority.AboveNormal };
+        _thread.Start();
+    }
     public void Stop() { _stop = true; _thread?.Join(3000); }
 
     void SetStatus(string s)
@@ -66,17 +80,14 @@ public sealed class Pipeline
 
     void Run()
     {
-        GestureRecognizer? rec = null;
-        Segmenter? seg = null;
         Capture? cap = null;
         VirtualCam? vcam = null;
         string? capKey = null, vcamKey = null;
         byte[]? frame = null;
         Nv12? outFrame = null;
-        Nv12? blurCache = null;
-        double nextGesture = 0, nextPresence = 0, lastSend = 0, vcamFailedUntil = 0, retry = 3;
-        string? held = null; double heldSince = 0, cooldownUntil = 0; bool needRelease = false;
+        double nextGesture = 0, nextPresence = 0, lastSend = 0, vcamFailedUntil = 0, retry = 3, perfLogAt = 0;
         int fpsN = 0; double fpsT = Now;
+        long readTicks = 0, workTicks = 0;
         var log = Log.Instance;
 
         void CloseCap() { cap?.Dispose(); cap = null; capKey = null; Camera = null; Streaming = false; }
@@ -96,12 +107,12 @@ public sealed class Pipeline
                 // ---- virtual camera
                 if (wantVcam)
                 {
-                    var key = c.vcam_size;
+                    var key = c.vcam_size + "@" + c.fps;
                     if (vcamKey != key)
                     {
                         CloseVcam();
-                        var (vw, vh) = Size(key);
-                        vcam = VirtualCam.TryCreate(vw, vh);
+                        var (vw, vh) = Size(c.vcam_size);
+                        vcam = VirtualCam.TryCreate(vw, vh, c.fps);
                         if (vcam == null)
                         {
                             vcamFailedUntil = now + 15;
@@ -110,7 +121,7 @@ public sealed class Pipeline
                         }
                         vcamKey = key;
                         outFrame = new Nv12(vw, vh);
-                        log.Info($"virtual camera on at {vw}x{vh}");
+                        log.Info($"virtual camera on at {vw}x{vh} {c.fps} fps");
                     }
                 }
                 else CloseVcam();
@@ -132,12 +143,13 @@ public sealed class Pipeline
                     continue;
                 }
 
-                var ck = c.capture_size;
+                // 60 fps: the camera's own 1080p60 mode. 30 fps: the chosen capture size (4K = sharpest).
+                var ck = c.fps == 60 ? "1920x1080@60" : c.capture_size + "@30";
                 if (capKey != ck)
                 {
                     CloseCap();
-                    var (cw, chh) = Size(ck);
-                    cap = Capture.Open("EMEET PIXY", cw, chh, out var err);
+                    var (cw, chh) = Size(ck.Split('@')[0]);
+                    cap = Capture.Open("EMEET PIXY", cw, chh, c.fps, out var err);
                     if (cap == null)
                     {
                         SetStatus(err ?? "camera in use by another app");
@@ -153,43 +165,33 @@ public sealed class Pipeline
                     CaptureInfo = $"{cap.Width}x{cap.Height}";
                     LastPerson = OpenedAt = Now;
                     Streaming = true;
-                    log.Info($"camera opened at {cap.Width}x{cap.Height}");
+                    log.Info($"camera opened at {cap.Width}x{cap.Height} {cap.Fps} fps");
+                    CameraOpened?.Invoke();
                 }
 
                 // ---- what does this picture need to be used for?
                 now = Now;
                 double zoom = Math.Clamp(c.zoom, 1, 3);
                 bool send = vcam != null && (HasReaders || now - lastSend >= IdleSendEvery);
-                bool checkGesture = detect && now >= nextGesture;
-                bool checkPresence = c.auto_sleep_away_min > 0 && now >= nextPresence;
                 string bg = vcam != null && !soft ? c.bg_mode : "off";
-                bool needPicture = (send && !soft) || checkGesture || checkPresence;
+                bool gestureDue = detect && now >= nextGesture;
+                bool presenceDue = (c.auto_sleep_away_min > 0 || WantBody) && now >= nextPresence;
+                bool maskDue = send && bg != "off";                       // blur/picture wants a fresh outline
+                bool handAi = !_ai.Busy && (gestureDue || presenceDue || maskDue);
+                bool needPicture = (send && !soft) || handAi;
 
+                var t0 = Stopwatch.GetTimestamp();
                 if (!cap!.Read(needPicture ? frame : null)) { CloseCap(); Thread.Sleep(1000); continue; }
+                readTicks += Stopwatch.GetTimestamp() - t0;
                 if (!needPicture) continue;
+                t0 = Stopwatch.GetTimestamp();
 
-                byte[]? rgb = null; int rw = 0, rh = 0;
-                void Small() { if (rgb == null) (rgb, rw, rh) = Nv12.SmallRgb(frame!, cap.Width, cap.Height, zoom); }
-
-                // ---- person mask: background effect, and once a second "is anyone there?"
-                float[]? mask = null; int mw = 0, mh = 0;
-                if ((send && bg != "off") || checkPresence)
+                // ---- AI runs on its own thread with a copy of this picture, so video never waits for it
+                if (handAi)
                 {
-                    try
-                    {
-                        seg ??= new Segmenter(Path.Combine(_here, "models", "selfie_segmenter.tflite"));
-                        Small();
-                        var (sr, sw, sh) = Nv12.SmallRgb(frame!, cap.Width, cap.Height, zoom, 256);
-                        (mask, mw, mh) = seg.Mask(sr, sw, sh, (long)(now * 1000));
-                        if (checkPresence)
-                        {
-                            nextPresence = now + 1;
-                            int on = 0;
-                            foreach (var v in mask) if (v > 0.5f) on++;
-                            if (on > mask.Length * 0.03) LastPerson = now;
-                        }
-                    }
-                    catch (Exception e) { log.Info("person cut-out failed: " + e.Message); nextPresence = now + 30; }
+                    if (gestureDue) nextGesture = now + GestureEvery;
+                    if (presenceDue) nextPresence = now + (WantBody ? 0.2 : 1);
+                    _ai.Submit(frame!, cap.Width, cap.Height, zoom, gestureDue, presenceDue || maskDue, presenceDue, c);
                 }
 
                 // ---- virtual camera picture
@@ -199,48 +201,140 @@ public sealed class Pipeline
                     else
                     {
                         Nv12.ZoomInto(frame!, cap.Width, cap.Height, zoom, outFrame!);
-                        if (bg != "off" && mask != null)
+                        var m = _ai.Mask;
+                        if (bg != "off" && m.mask != null)
                         {
                             Nv12? back = bg == "blur" ? Nv12.Blurred(outFrame!, c.bg_blur) : Picture(c.bg_image, outFrame!.W, outFrame.H);
-                            if (back != null) Nv12.Blend(outFrame!, back, mask, mw, mh);
+                            if (back != null) Nv12.Blend(outFrame!, back, m.mask, m.w, m.h);
                         }
                         vcam!.Send(outFrame!.Data);
                     }
                     lastSend = now;
-                    if (++fpsN > 0 && now - fpsT >= 2) { Fps = fpsN / (now - fpsT); fpsN = 0; fpsT = now; }
+                    fpsN++;
+                }
+                workTicks += Stopwatch.GetTimestamp() - t0;
+                if (now - fpsT >= 2)
+                {
+                    Fps = fpsN / (now - fpsT);
+                    if (now - perfLogAt > 60 && HasReaders)
+                    {
+                        perfLogAt = now;
+                        double perRead = readTicks * 1000.0 / Stopwatch.Frequency / Math.Max(1, fpsN);
+                        double perWork = workTicks * 1000.0 / Stopwatch.Frequency / Math.Max(1, fpsN);
+                        log.Info($"video: {Fps:0.0} fps sent, per picture {perRead:0.0} ms waiting for the camera, {perWork:0.0} ms work");
+                    }
+                    fpsN = 0; fpsT = now; readTicks = workTicks = 0;
                 }
 
                 SetStatus(detect ? "watching" : "virtual camera only");
-
-                // ---- gestures
-                if (!checkGesture) { if (!detect) held = null; continue; }
-                nextGesture = now + GestureEvery;
-                try
-                {
-                    rec ??= new GestureRecognizer(Path.Combine(_here, "models", "gesture_recognizer.task"));
-                    Small();
-                    var (name, score, hand) = rec.Recognize(rgb!, rw, rh, (long)(now * 1000));
-                    if (hand) LastPerson = now;
-                    string? seen = name != null && score >= c.min_score ? name : null;
-                    if (seen == null) { held = null; needRelease = false; continue; }
-                    if (needRelease || now < cooldownUntil) continue;
-                    if (seen != held) { held = seen; heldSince = now; continue; }
-                    double hold = c.gesture_hold.TryGetValue(seen, out var h) && h > 0 ? h : c.hold_s;
-                    if (now - heldSince >= hold)
-                    {
-                        _onGesture(seen);
-                        held = null; needRelease = true;
-                        cooldownUntil = now + c.cooldown_s;
-                    }
-                }
-                catch (Exception e) { log.Info("gesture check failed: " + e.Message); nextGesture = now + 30; }
+                if (!detect) _ai.ClearGesture();
             }
         }
         catch (Exception e) { log.Info("pipeline stopped: " + e); }
         finally
         {
             CloseCap(); CloseVcam();
-            rec?.Dispose(); seg?.Dispose();
+            _ai.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// The AI side (gestures, person outline) on its own thread. It always works on the newest picture
+    /// it was handed and skips any that arrive while it's busy, so it can never slow the video down.
+    /// </summary>
+    sealed class Ai : IDisposable
+    {
+        readonly Pipeline _p;
+        readonly Thread _t;
+        readonly AutoResetEvent _go = new(false);
+        byte[] _buf = [];
+        int _w, _h; double _zoom; bool _gesture, _mask, _presence; Config? _cfg;
+        volatile bool _busy, _stop;
+        GestureRecognizer? _rec;
+        Segmenter? _seg;
+        string? _held; double _heldSince, _cooldownUntil; bool _needRelease;
+        public bool Busy => _busy;
+        public (float[]? mask, int w, int h) Mask { get; private set; }
+
+        public Ai(Pipeline p)
+        {
+            _p = p;
+            _t = new Thread(Run) { IsBackground = true, Name = "ai", Priority = ThreadPriority.BelowNormal };
+            _t.Start();
+        }
+
+        public void Submit(byte[] frame, int w, int h, double zoom, bool gesture, bool mask, bool presence, Config cfg)
+        {
+            if (_busy) return;
+            if (_buf.Length != frame.Length) _buf = new byte[frame.Length];
+            Buffer.BlockCopy(frame, 0, _buf, 0, frame.Length);
+            (_w, _h, _zoom, _gesture, _mask, _presence, _cfg) = (w, h, zoom, gesture, mask, presence, cfg);
+            _busy = true;
+            _go.Set();
+        }
+
+        public void ClearGesture() { _held = null; }
+
+        void Run()
+        {
+            string here = AppContext.BaseDirectory;
+            var log = Log.Instance;
+            double nextTry = 0;
+            while (!_stop)
+            {
+                _go.WaitOne();
+                if (_stop) break;
+                double now = Now;
+                try
+                {
+                    if (now < nextTry) continue;
+                    var c = _cfg!;
+                    if (_mask)
+                    {
+                        _seg ??= new Segmenter(Path.Combine(here, "models", "selfie_segmenter.tflite"));
+                        var (sr, sw, sh) = Nv12.SmallRgb(_buf, _w, _h, _zoom, 256);
+                        var (m, mw, mh) = _seg.Mask(sr, sw, sh, (long)(now * 1000));
+                        Mask = (m, mw, mh);
+                        if (_presence)
+                        {
+                            var box = PersonBox(m, mw, mh);
+                            if (box.area > 0.03) _p.LastPerson = now;
+                            _p.Body = (box.cx, box.top, box.bottom, box.area, now);
+                        }
+                    }
+                    if (_gesture)
+                    {
+                        _rec ??= new GestureRecognizer(Path.Combine(here, "models", "gesture_recognizer.task"));
+                        var (rgb, rw, rh) = Nv12.SmallRgb(_buf, _w, _h, _zoom);
+                        var (name, score, hand) = _rec.Recognize(rgb, rw, rh, (long)(now * 1000));
+                        if (hand) _p.LastPerson = now;
+                        string? seen = name != null && score >= c.min_score ? name : null;
+                        if (seen == null) { _held = null; _needRelease = false; }
+                        else if (!_needRelease && now >= _cooldownUntil)
+                        {
+                            if (seen != _held) { _held = seen; _heldSince = now; }
+                            else
+                            {
+                                double hold = c.gesture_hold.TryGetValue(seen, out var hh) && hh > 0 ? hh : c.hold_s;
+                                if (now - _heldSince >= hold)
+                                {
+                                    _p._onGesture(seen);
+                                    _held = null; _needRelease = true;
+                                    _cooldownUntil = now + c.cooldown_s;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e) { log.Info("AI check failed: " + e.Message); nextTry = now + 30; }
+                finally { _busy = false; }
+            }
+        }
+
+        public void Dispose()
+        {
+            _stop = true; _go.Set(); _t.Join(2000);
+            _rec?.Dispose(); _seg?.Dispose();
         }
     }
 
@@ -250,6 +344,22 @@ public sealed class Pipeline
         using var ms = new MemoryStream(File.ReadAllBytes(path));
         using var img = Image.FromStream(ms);
         return new Bitmap(img);
+    }
+
+    /// <summary>Where the person is: centre x, top and bottom (0..1) and how much of the picture they fill.</summary>
+    static (double cx, double top, double bottom, double area) PersonBox(float[] m, int w, int h)
+    {
+        long sumX = 0; int on = 0, top = h, bottom = -1;
+        var rowOn = new int[h];
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                if (m[y * w + x] > 0.5f) { sumX += x; on++; rowOn[y]++; }
+        if (on == 0) return (0.5, 0, 1, 0);
+        int minRow = Math.Max(2, w / 40);                 // ignore stray specks
+        for (int y = 0; y < h; y++) if (rowOn[y] >= minRow) { top = y; break; }
+        for (int y = h - 1; y >= 0; y--) if (rowOn[y] >= minRow) { bottom = y; break; }
+        if (bottom < top) { top = 0; bottom = h - 1; }
+        return ((double)sumX / on / w, (double)top / h, (double)(bottom + 1) / h, (double)on / (w * h));
     }
 
     // ---- pictures (cards, chosen background) as NV12, cached by size

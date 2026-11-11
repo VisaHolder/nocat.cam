@@ -19,6 +19,9 @@ public sealed class App : IDisposable
     public string? AutoSlept { get; private set; }  // "away" / "unused" when we put it to sleep ourselves
     public int? Mode { get; private set; }
     public bool Asleep => CamAsleep || SoftAsleep;
+    /// <summary>nocat.cam is steering the camera to keep your whole body in frame (camera in manual).</summary>
+    public bool BodyTracking { get; private set; }
+    public bool TrackingOn => BodyTracking || Mode == Pixy.Tracking;
     int _modeBeforeSleep = Pixy.Manual;
     double _lastActivity = Now;
 
@@ -35,6 +38,7 @@ public sealed class App : IDisposable
             g => { _log.Info($"gesture {g} held"); Run(Cfg.gesture_actions.GetValueOrDefault(g, "none")); },
             s => { _log.Info("status: " + s); Changed?.Invoke(); });
         Keys = new Hotkeys(a => Run(a));
+        Video.CameraOpened += () => { if (Cfg.fixed_exposure) ApplyExposure(true); };
     }
 
     public void Start()
@@ -43,6 +47,7 @@ public sealed class App : IDisposable
         Keys.Bind(Cfg.hotkeys);
         new Thread(PollMode) { IsBackground = true, Name = "mode" }.Start();
         new Thread(AutoLoop) { IsBackground = true, Name = "auto" }.Start();
+        new Thread(BodyLoop) { IsBackground = true, Name = "body" }.Start();
         if (Cfg.fixed_exposure) ApplyExposure(true);
     }
 
@@ -86,7 +91,7 @@ public sealed class App : IDisposable
         _log.Info("action " + action + (why != null ? $" ({why})" : ""));
         var c = Cfg;
         if (action == "toggle_sleep") action = Cam.GetMode() == Pixy.Sleep || SoftAsleep ? "wake" : "sleep";
-        if (action == "toggle_tracking") action = Cam.GetMode() == Pixy.Tracking ? "manual" : "tracking";
+        if (action == "toggle_tracking") action = BodyTracking || Cam.GetMode() == Pixy.Tracking ? "manual" : "tracking";
         if (action == "toggle_bg")
         {
             if (c.bg_mode == "off") c.bg_mode = c.bg_last;
@@ -109,7 +114,7 @@ public sealed class App : IDisposable
         {
             bool wasCamAsleep = Cam.GetMode() == Pixy.Sleep;
             SoftAsleep = false; AutoSlept = null;
-            if (c.wake_to == "tracking") Cam.SetMode(Pixy.Tracking);
+            if (c.wake_to == "tracking") StartTracking();
             else if (c.positions.TryGetValue(c.wake_to, out var pos))
             {
                 Cam.SetMode(Pixy.Manual);
@@ -123,10 +128,13 @@ public sealed class App : IDisposable
         // anything else counts as "I'm here": wake from a soft sleep first
         if (SoftAsleep && !action.StartsWith("zoom") && !action.StartsWith("save_")) { SoftAsleep = false; AutoSlept = null; }
 
+        // moving the camera by hand ends nocat.cam's body tracking
+        if (action.StartsWith("goto_") || action.StartsWith("nudge_") || action == "center") BodyTracking = false;
+
         switch (action)
         {
-            case "tracking": Cam.SetMode(Pixy.Tracking); break;
-            case "manual": Cam.SetMode(Pixy.Manual); break;
+            case "tracking": StartTracking(); break;
+            case "manual": BodyTracking = false; Cam.SetMode(Pixy.Manual); break;
             case "zoom_in" or "zoom_out" or "zoom_reset":
                 c.zoom = action == "zoom_reset" ? 1 : Math.Round(Math.Clamp(c.zoom + (action == "zoom_in" ? c.zoom_step : -c.zoom_step), 1, 3), 2);
                 c.Save();
@@ -140,6 +148,52 @@ public sealed class App : IDisposable
                 else if (action.StartsWith("save_")) SavePosition(action[5..]);
                 else if (action.StartsWith("nudge_") || action == "center") Nudge(action);
                 break;
+        }
+    }
+
+    /// <summary>Tracking on, in the chosen style: the camera's own face tracking, or nocat.cam's whole-body tracking.</summary>
+    void StartTracking()
+    {
+        if (Cfg.track_style == "body") { Cam.SetMode(Pixy.Manual); BodyTracking = true; }
+        else { BodyTracking = false; Cam.SetMode(Pixy.Tracking); }
+    }
+
+    /// <summary>
+    /// Whole-body tracking: 5 times a second, look where the person's outline is and turn the camera so
+    /// they're centred left-right with the top of their head near the top of the picture. Because it
+    /// follows the whole outline (not just a face), crouching or turning away doesn't lose you.
+    /// </summary>
+    void BodyLoop()
+    {
+        const double HFov = 70, VFov = 42;      // PIXY field of view (degrees, roughly) at zoom 1
+        const double DeadX = 0.08, DeadY = 0.07, Gain = 0.55, MaxStep = 12;
+        double lastMeasured = 0, movedAt = 0;
+        while (!_quit)
+        {
+            Thread.Sleep(100);
+            Video.WantBody = BodyTracking && !Asleep;
+            if (!BodyTracking || Asleep) continue;
+            var b = Video.Body;
+            double now = Now;
+            // only act on a fresh measurement taken after the camera finished its last move
+            if (b.at <= lastMeasured || now - b.at > 0.8 || b.at < movedAt + 0.35) continue;
+            lastMeasured = b.at;
+            if (b.area < 0.03) continue;           // nobody there: hold still
+            double zoom = Math.Max(1, Cfg.zoom);
+            double ex = b.cx - 0.5;
+            double ey = b.top - 0.12;               // head just below the top edge
+            double dPan = Math.Abs(ex) > DeadX ? Math.Clamp(-ex * HFov / zoom * Gain, -MaxStep, MaxStep) : 0;
+            double dTilt = Math.Abs(ey) > DeadY ? Math.Clamp(-ey * VFov / zoom * Gain, -MaxStep, MaxStep) : 0;
+            if (dPan == 0 && dTilt == 0) continue;
+            if (!Monitor.TryEnter(_doLock)) continue;
+            try
+            {
+                var pos = Cam.Position();
+                if (pos == null) continue;
+                Cam.MoveTo(pos.Value.pan + dPan, Math.Clamp(pos.Value.tilt + dTilt, -60, 60));
+                movedAt = Now;
+            }
+            finally { Monitor.Exit(_doLock); }
         }
     }
 
@@ -187,8 +241,10 @@ public sealed class App : IDisposable
         {
             var info = PictureControls.Read(cap);
             if (!info.TryGetValue("Exposure", out var e)) return;
-            PictureControls.Set(cap, "Exposure", fixedExposure ? -5 : e.value, auto: !fixedExposure);
-            _log.Info(fixedExposure ? "exposure fixed (smooth 30 fps)" : "exposure back on auto");
+            // 2^-5 s = 1/32 s fits 30 fps; 60 fps needs 2^-6 s = 1/64 s
+            int fixedValue = Cfg.fps == 60 ? -6 : -5;
+            PictureControls.Set(cap, "Exposure", fixedExposure ? fixedValue : e.value, auto: !fixedExposure);
+            _log.Info(fixedExposure ? $"exposure fixed for a steady {Cfg.fps} fps" : "exposure back on auto");
         }
         catch (Exception ex) { _log.Info("exposure change failed: " + ex.Message); }
     });
@@ -206,6 +262,7 @@ public sealed class App : IDisposable
             {
                 Mode = m;
                 CamAsleep = m == Pixy.Sleep;
+                if (m == Pixy.Tracking) BodyTracking = false;   // the palm gesture switched to the camera's own tracking
                 if (!CamAsleep && AutoSlept != null && !SoftAsleep) AutoSlept = null;
                 Changed?.Invoke();
             }

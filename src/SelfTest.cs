@@ -47,7 +47,7 @@ static class SelfTest
             var names = Capture.List();
             Note("cameras: " + string.Join(", ", names));
             Check("EMEET PIXY listed", names.Contains("EMEET PIXY"));
-            using var cap = Capture.Open("EMEET PIXY", 3840, 2160, out var err);
+            using var cap = Capture.Open("EMEET PIXY", 3840, 2160, 30, out var err);
             Check("open camera at 4K", cap != null, cap != null ? $"{cap.Width}x{cap.Height}" : err ?? "");
             if (cap != null)
             {

@@ -12,6 +12,7 @@ public sealed class Config
     public string vcam_size { get; set; } = "1920x1080";
     public string capture_size { get; set; } = "3840x2160";
     public bool fixed_exposure { get; set; }
+    public int fps { get; set; } = 30;                 // 30, or 60 for 1080p and smaller
     public double zoom { get; set; } = 1.0;
     public double zoom_step { get; set; } = 0.1;
     public double glide_s { get; set; } = 1.5;
@@ -21,6 +22,7 @@ public sealed class Config
     public int bg_blur { get; set; } = 6;
     public string bg_image { get; set; } = "";
     public string sleep_style { get; set; } = "privacy";  // privacy | soft
+    public string track_style { get; set; } = "camera";   // camera = PIXY follows your face | body = nocat.cam follows your whole body
     public string wake_to { get; set; } = "stay";
     public double auto_sleep_away_min { get; set; }
     public double auto_sleep_unused_min { get; set; }
@@ -68,6 +70,8 @@ public sealed class Config
         hold_s = Math.Clamp(hold_s, 0.3, 10);
         min_score = Math.Clamp(min_score, 0.3, 0.95);
         bg_blur = Math.Clamp(bg_blur, 1, 10);
+        if (track_style is not ("camera" or "body")) track_style = "camera";
+        if (fps != 60 || vcam_size is "3840x2160" or "2560x1440") fps = 30;   // the camera does 60 only up to 1080p
     }
 
     public void Save()

@@ -14,10 +14,11 @@ public sealed class Capture : IDisposable
     readonly IMFSourceReader _reader;
     public int Width { get; }
     public int Height { get; }
+    public int Fps { get; }
     public IMFMediaSource Source => _source;
 
-    Capture(IMFMediaSource source, IMFSourceReader reader, int w, int h)
-    { _source = source; _reader = reader; Width = w; Height = h; }
+    Capture(IMFMediaSource source, IMFSourceReader reader, int w, int h, int fps)
+    { _source = source; _reader = reader; Width = w; Height = h; Fps = fps; }
 
     public static void Startup()
     {
@@ -44,7 +45,7 @@ public sealed class Capture : IDisposable
     }
 
     /// <summary>Open a camera by name at (about) the wanted size, 30 fps, as NV12. Null if busy or missing.</summary>
-    public static Capture? Open(string name, int wantW, int wantH, out string? error)
+    public static Capture? Open(string name, int wantW, int wantH, int wantFps, out string? error)
     {
         Startup();
         error = null;
@@ -72,13 +73,19 @@ public sealed class Capture : IDisposable
                 var t = handler.GetMediaTypeByIndex(i);
                 var sub = t.GetGUID(MediaTypeAttributeKeys.Subtype);
                 MediaFactory.MFGetAttributeSize(t, MediaTypeAttributeKeys.FrameSize, out uint w, out uint h);
-                MediaFactory.MFGetAttributeRatio(t, MediaTypeAttributeKeys.FrameRate, out uint n, out uint dn);
-                double fps = dn == 0 ? 0 : (double)n / dn;
+                double fps = MaxFps(t);
                 long score = Math.Abs((long)w * h - (long)wantW * wantH) + (sub == VideoFormatGuids.Mjpg ? 0 : 1L << 40)
-                           + (fps >= 29 ? 0 : 1L << 36);
+                           + (fps >= wantFps - 1 ? (long)(fps - wantFps) : 1L << 36);
                 if (score < bestScore) { best?.Dispose(); best = t; bestScore = score; } else t.Dispose();
             }
-            if (best != null) { handler.CurrentMediaType = best; }
+            uint useFps = (uint)wantFps;
+            if (best != null)
+            {
+                double max = MaxFps(best);
+                if (max > 0 && max + 0.5 < useFps) useFps = (uint)Math.Round(max);   // the mode can't go that fast
+                MediaFactory.MFSetAttributeRatio(best, MediaTypeAttributeKeys.FrameRate, useFps, 1);
+                handler.CurrentMediaType = best;
+            }
 
             using var ra = MediaFactory.MFCreateAttributes(2);
             ra.Set(SourceReaderAttributeKeys.EnableVideoProcessing, 1u);
@@ -93,7 +100,7 @@ public sealed class Capture : IDisposable
                 MediaFactory.MFSetAttributeSize(outType, MediaTypeAttributeKeys.FrameSize, bw, bh);
                 reader.SetCurrentMediaType(SourceReaderIndex.FirstVideoStream, outType);
             }
-            return new Capture(source, reader, (int)bw, (int)bh);
+            return new Capture(source, reader, (int)bw, (int)bh, (int)useFps);
         }
         catch (Exception e)
         {
@@ -102,6 +109,19 @@ public sealed class Capture : IDisposable
             try { source?.Shutdown(); source?.Dispose(); } catch { }
             return null;
         }
+    }
+
+    /// <summary>The fastest frame rate a camera mode allows (its range max, else its default rate).</summary>
+    static double MaxFps(IMFMediaType t)
+    {
+        try
+        {
+            MediaFactory.MFGetAttributeRatio(t, MediaTypeAttributeKeys.FrameRateRangeMax, out uint n, out uint d);
+            if (d != 0 && n > 0) return (double)n / d;
+        }
+        catch { }
+        MediaFactory.MFGetAttributeRatio(t, MediaTypeAttributeKeys.FrameRate, out uint fn, out uint fd);
+        return fd == 0 ? 0 : (double)fn / fd;
     }
 
     /// <summary>Wait for the next picture. Copies it into 'into' (W*H*3/2 bytes) when asked; false on error.</summary>

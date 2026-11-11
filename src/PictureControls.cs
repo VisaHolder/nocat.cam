@@ -55,12 +55,50 @@ public static class PictureControls
         return d;
     }
 
-    public static void Set(Capture cap, string name, int value, bool auto)
+    /// <summary>
+    /// Change a control and make sure it stuck: right after a camera opens it can silently ignore
+    /// changes, so this reads it back and tries again (up to ~2 s).
+    /// </summary>
+    public static bool Set(Capture cap, string name, int value, bool auto)
     {
         var (_, cam, id) = All.First(a => a.name == name);
         var src = Marshal.GetObjectForIUnknown(cap.Source.NativePointer);
         int flags = auto ? Auto : Manual;
-        if (cam) ((IAMCameraControl)src).Set(id, value, flags); else ((IAMVideoProcAmp)src).Set(id, value, flags);
+        for (int attempt = 0; attempt < 10; attempt++)
+        {
+            int v, f;
+            if (cam) { var i = (IAMCameraControl)src; i.Set(id, value, flags); i.Get(id, out v, out f); }
+            else { var i = (IAMVideoProcAmp)src; i.Set(id, value, flags); i.Get(id, out v, out f); }
+            bool isAuto = (f & Auto) != 0;
+            if (isAuto == auto && (auto || v == value)) return true;
+            Thread.Sleep(200);
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// UVC "auto-exposure priority" (camera control 19). Off = auto exposure may NOT slow the frame rate
+    /// (it brightens with gain instead), so dim rooms keep full fps at normal brightness.
+    /// Returns null if the camera doesn't have it.
+    /// </summary>
+    public const int AutoExposurePriority = 19;
+
+    public static (int min, int max, int value)? RawCameraControl(Capture cap, int id)
+    {
+        try
+        {
+            var i = (IAMCameraControl)Marshal.GetObjectForIUnknown(cap.Source.NativePointer);
+            if (i.GetRange(id, out var mn, out var mx, out _, out _, out _) != 0) return null;
+            if (i.Get(id, out var v, out _) != 0) return null;
+            return (mn, mx, v);
+        }
+        catch { return null; }
+    }
+
+    public static bool SetRawCameraControl(Capture cap, int id, int value)
+    {
+        try { return ((IAMCameraControl)Marshal.GetObjectForIUnknown(cap.Source.NativePointer)).Set(id, value, Manual) == 0; }
+        catch { return false; }
     }
 
     public static Info? Reset(Capture cap, string name)
