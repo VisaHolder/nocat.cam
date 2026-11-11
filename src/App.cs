@@ -35,7 +35,7 @@ public sealed class App : IDisposable
         {
             if (_bodyTracking == value) return;
             _bodyTracking = value;
-            if (!value) { Video.AutoZoom = 0; _frameRef = 0; }   // back to your own zoom; re-measure next time
+            if (!value) { Video.AutoZoom = 0; _frameRef = 0; _faceAvg = 0; }   // back to your own zoom; re-measure next time
             if (Cfg.body_tracking != value) { Cfg.body_tracking = value; Cfg.Save(); }
         }
     }
@@ -75,7 +75,7 @@ public sealed class App : IDisposable
                 Cfg.not_me_faces.Add(print);
                 while (Cfg.not_me_faces.Count > 30) Cfg.not_me_faces.RemoveAt(0);
                 // a "not me" face that looks like you would be a mistake: never keep one that matches a saved you
-                Cfg.not_me_faces.RemoveAll(o => FaceId.MatchScore(o, Cfg.me_faces) >= Cfg.face_match + 0.1);
+                Cfg.not_me_faces.RemoveAll(o => FaceId.MatchScore(o, Cfg.me_faces) >= Cfg.face_match + 0.25);
             });
             Cfg.Save();
             _log.Info($"learned someone else's face ({Cfg.not_me_faces.Count} saved)");
@@ -251,44 +251,112 @@ public sealed class App : IDisposable
     /// they're centred left-right with the top of their head near the top of the picture. Because it
     /// follows the whole outline (not just a face), crouching or turning away doesn't lose you.
     /// </summary>
+    /// <summary>
+    /// nocat.cam's own tracking, as one continuous glide: about 16 times a second the camera is nudged
+    /// towards a target, speeding up and slowing down smoothly (no stop-start). Each new measurement of
+    /// where you are moves the target, measured against where the camera was pointing when that picture
+    /// was taken. Small wobbles are ignored; it only sets off when you're clearly off-centre, then centres
+    /// you properly.
+    /// </summary>
     void BodyLoop()
     {
-        const double HFov = 70, VFov = 42;      // PIXY field of view (degrees, roughly) at zoom 1
-        const double DeadX = 0.08, DeadY = 0.07;
-        double lastMeasured = 0, movedAt = 0;
+        const double HFov = 70, VFov = 42;          // PIXY field of view (degrees, roughly) at zoom 1
+        const double StartX = 0.11, StartY = 0.10;  // how far off-centre before it sets off
+        const double Tick = 0.06;
+        double lastMeasured = 0;
+        double cmdPan = 0, cmdTilt = 0, tgtPan = 0, tgtTilt = 0, velPan = 0, velTilt = 0;
+        double tvPan = 0, tvTilt = 0, lastNPan = 0, lastNTilt = 0, lastNAt = -1;   // how fast you're moving (predicted between readings)
+        bool have = false, moving = false;
+        var history = new Queue<(double t, double pan, double tilt)>();   // where we pointed it, and when
         while (!_quit)
         {
-            Thread.Sleep(100);
+            Thread.Sleep((int)(Tick * 1000));
             Video.WantBody = BodyTracking && !Asleep;
             Video.FaceLock = BodyTracking && Cfg.track_style == "me";      // no saved face yet = hold still
             Video.AutoFrame = BodyTracking && Cfg.auto_frame;
-            int speed = Cfg.follow_speed;
-            double Gain = 0.25 + 0.06 * speed, MaxStep = 4 + 1.6 * speed, Settle = Math.Max(0.3, 0.5 - 0.03 * speed);   // 5 = the old feel
             if (!Cfg.auto_frame) { Video.AutoZoom = 0; _frameRef = 0; }
-            if (!BodyTracking || Asleep) continue;
-            var b = Video.Body;
+            if (!BodyTracking || Asleep) { have = false; moving = false; tvPan = tvTilt = 0; lastNAt = -1; history.Clear(); continue; }
             double now = Now;
-            // only act on a fresh measurement taken after the camera finished its last move
-            if (b.at <= lastMeasured || now - b.at > 0.8 || b.at < movedAt + Settle) continue;
-            lastMeasured = b.at;
-            if (b.area < 0.03) continue;           // nobody there: hold still
-            AutoFrame(b, now);
-            double zoom = Math.Max(1, Video.ZoomNow);
-            double ex = b.cx - 0.5;
-            double ey = b.top - 0.12;               // head just below the top edge
-            double dPan = Math.Abs(ex) > DeadX ? Math.Clamp(-ex * HFov / zoom * Gain, -MaxStep, MaxStep) : 0;
-            double dTilt = Math.Abs(ey) > DeadY ? Math.Clamp(-ey * VFov / zoom * Gain, -MaxStep, MaxStep) : 0;
-            if (dPan == 0 && dTilt == 0) continue;
-            if (!Monitor.TryEnter(_doLock)) continue;
-            try
+            int speed = Cfg.follow_speed;
+            double maxVel = 8 + 4 * speed;          // degrees a second at full speed (5 -> 28)
+            double accel = 30 + 12 * speed;         // how quickly it gets up to speed
+
+            if (!have)
             {
-                var pos = Cam.Position();
-                if (pos == null) continue;
-                Cam.MoveTo(pos.Value.pan + dPan, Math.Clamp(pos.Value.tilt + dTilt, -60, 60));
-                movedAt = Now;
+                var p = Cam.Position();
+                if (p == null) continue;
+                (cmdPan, cmdTilt) = p.Value; (tgtPan, tgtTilt) = p.Value; velPan = velTilt = 0; have = true;
             }
+
+            // ---- a new measurement moves the target
+            var b = Video.Body;
+            if (b.at > lastMeasured && now - b.at < 0.8)
+            {
+                lastMeasured = b.at;
+                if (b.area >= 0.03)
+                {
+                    if (b.head > 0 || b.span > 0) AutoFrame(b, now);
+                    // where the camera was pointing when that picture was taken (pictures reach us ~0.1 s late)
+                    double when = b.at - 0.1, atPan = cmdPan, atTilt = cmdTilt;
+                    foreach (var h in history) if (h.t <= when) { atPan = h.pan; atTilt = h.tilt; }
+                    double zoom = Math.Max(1, b.z > 0 ? b.z : Video.ZoomNow);
+                    double ex = b.cx - 0.5, ey = b.top - 0.12;          // head just below the top edge
+                    bool far = Math.Abs(ex) > StartX || Math.Abs(ey) > StartY;
+                    bool centred = Math.Abs(ex) < 0.04 && Math.Abs(ey) < 0.04;
+                    if (far || moving)
+                    {
+                        double nPan = atPan - ex * HFov / zoom, nTilt = Math.Clamp(atTilt - ey * VFov / zoom, -60, 60);
+                        if (moving && lastNAt > 0 && b.at - lastNAt > 0.05)
+                        {
+                            // how fast you're moving, so the glide carries on between readings instead of stop-start
+                            double k = 1 / (b.at - lastNAt);
+                            tvPan += ((nPan - lastNPan) * k - tvPan) * 0.4;
+                            tvTilt += ((nTilt - lastNTilt) * k - tvTilt) * 0.4;
+                        }
+                        (lastNPan, lastNTilt, lastNAt) = (nPan, nTilt, b.at);
+                        // follow the measurement, but calmly: half way to each new reading
+                        tgtPan += (nPan - tgtPan) * 0.5; tgtTilt += (nTilt - tgtTilt) * 0.5;
+                        moving = true;
+                        // you're centred, it has caught up and you've stopped: rest until you're clearly off-centre again
+                        if (centred && Math.Abs(tgtPan - cmdPan) < 0.5 && Math.Abs(tgtTilt - cmdTilt) < 0.5 && Math.Abs(tvPan) < 2 && Math.Abs(tvTilt) < 2)
+                        { moving = false; tvPan = tvTilt = 0; lastNAt = -1; }
+                    }
+                }
+            }
+
+            // ---- glide the camera towards the target (which keeps moving with you between readings)
+            if (!moving) { velPan = velTilt = 0; continue; }
+            if (now - lastMeasured > 0.5 || Video.Body.area < 0.03)
+            {
+                // lost you: stop predicting, glide to a halt, then rest
+                tvPan *= 0.8; tvTilt *= 0.8;
+                if (now - lastMeasured > 1.5 || Video.Body.area < 0.03) { tgtPan = cmdPan + velPan * 0.15; tgtTilt = cmdTilt + velTilt * 0.15; tvPan = tvTilt = 0; }
+                if (Math.Abs(velPan) < 1 && Math.Abs(velTilt) < 1 && now - lastMeasured > 1.5) { moving = false; lastNAt = -1; continue; }
+            }
+            tgtPan += Math.Clamp(tvPan, -maxVel * 0.8, maxVel * 0.8) * Tick;
+            tgtTilt = Math.Clamp(tgtTilt + Math.Clamp(tvTilt, -maxVel * 0.8, maxVel * 0.8) * Tick, -60, 60);
+            double dp = tgtPan - cmdPan, dt = tgtTilt - cmdTilt;
+            if (Math.Abs(dp) < 0.1 && Math.Abs(dt) < 0.1 && Math.Abs(velPan) < 1 && Math.Abs(velTilt) < 1) { velPan = velTilt = 0; continue; }   // on target: no need to send anything
+            velPan = Steer(velPan, dp, maxVel, accel, Tick);
+            velTilt = Steer(velTilt, dt, maxVel, accel, Tick);
+            cmdPan += velPan * Tick; cmdTilt = Math.Clamp(cmdTilt + velTilt * Tick, -60, 60);
+            if (!Monitor.TryEnter(_doLock)) continue;
+            try { Cam.MoveTo(cmdPan, cmdTilt); }
             finally { Monitor.Exit(_doLock); }
+            history.Enqueue((now, cmdPan, cmdTilt));
+            while (history.Count > 40) history.Dequeue();
         }
+    }
+
+    /// <summary>
+    /// Speed for the next step: aim for a speed that brakes in time to stop on the target
+    /// (v = sqrt(2*a*distance)), never faster than max, changing speed by at most accel per second.
+    /// </summary>
+    static double Steer(double vel, double dist, double maxVel, double accel, double tick)
+    {
+        double want = Math.Sign(dist) * Math.Min(maxVel, Math.Sqrt(2 * accel * 0.8 * Math.Abs(dist)));
+        double dv = Math.Clamp(want - vel, -accel * tick, accel * tick);
+        return vel + dv;
     }
 
     /// <summary>
@@ -299,13 +367,15 @@ public sealed class App : IDisposable
     void AutoFrame(BodyInfo b, double now)
     {
         if (!Cfg.auto_frame || b.z <= 0) return;
-        if (now - ManualZoomAt < 20) { Video.AutoZoom = 0; _frameRef = 0; return; }   // you just zoomed yourself
+        if (now - ManualZoomAt < 20) { Video.AutoZoom = 0; _frameRef = 0; _faceAvg = 0; return; }   // you just zoomed yourself
         double z = Video.AutoZoom > 0 ? Video.AutoZoom : Math.Max(1, Cfg.zoom);
         double want;
         if (b.span > 0) want = b.z * 0.55 / b.span;            // a group: faces spread over about half the width
         else if (b.head > 0)
         {
-            double atOne = b.head / b.z;                        // how big your face is with no zoom
+            double raw = b.head / b.z;                          // how big your face is with no zoom
+            _faceAvg = _faceAvg <= 0 ? raw : _faceAvg + (raw - _faceAvg) * 0.2;   // averaged over about a second
+            double atOne = _faceAvg;
             if (_frameRef <= 0)
             {
                 _frameRef = atOne * Math.Max(1, Cfg.zoom);
@@ -314,12 +384,13 @@ public sealed class App : IDisposable
             want = _frameRef / atOne;
         }
         else return;
+        if (b.head > 0) want = Math.Min(want, 0.6 / Math.Max(0.05, _faceAvg));   // never so close the face gets cut off
         want = Math.Clamp(want, 1, 3);
-        if (Math.Abs(want - z) / z < 0.08) { if (Video.AutoZoom <= 0) Video.AutoZoom = z; return; }   // close enough: don't breathe
+        if (Math.Abs(want - z) / z < 0.12) { if (Video.AutoZoom <= 0) Video.AutoZoom = z; return; }   // close enough: don't breathe
         if (Math.Abs(want - _frameLogged) > 0.25) { _frameLogged = want; _log.Info($"auto framing: zoom {z:0.00} -> {want:0.00}"); }
         Video.AutoZoom = Math.Round(want, 3);                 // the picture eases there smoothly
     }
-    double _frameRef, _frameLogged;
+    double _frameRef, _frameLogged, _faceAvg;
 
     void Nudge(string action)
     {

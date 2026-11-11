@@ -226,7 +226,8 @@ public sealed class Pipeline
                 // ---- what does this picture need to be used for?
                 now = Now;
                 double wantZoom = Math.Clamp(AutoZoom > 0 ? AutoZoom : c.zoom, 1, 3);
-                double zoom = ZoomNow = Math.Abs(wantZoom - ZoomNow) < 0.004 ? wantZoom : ZoomNow + (wantZoom - ZoomNow) * 0.2;
+                double ease = AutoZoom > 0 ? 0.04 : 0.2;
+                double zoom = ZoomNow = Math.Abs(wantZoom - ZoomNow) < 0.002 ? wantZoom : ZoomNow + (wantZoom - ZoomNow) * ease;
                 bool send = vcam != null && (HasReaders || now - lastSend >= IdleSendEvery);
                 string bg = vcam != null && !soft ? c.bg_mode : "off";
                 bool gestureDue = detect && now >= nextGesture;
@@ -389,7 +390,7 @@ public sealed class Pipeline
             _meChecked = now;
             string here = AppContext.BaseDirectory;
             _faces ??= new FaceId(Path.Combine(here, "models", "face_detector.tflite"), Path.Combine(here, "models", "face_embedder.tflite"));
-            var (rgb, rw, rh) = Nv12.SmallRgb(_buf, _w, _h, _zoom, 640);
+            var (rgb, rw, rh) = Nv12.SmallRgb(_buf, _w, _h, _zoom, 640);   // faces: the raw picture recognises you best
             bool remember = _p.RememberRequested;
             _p.RememberRequested = false;
             List<FaceId.Face> faces;
@@ -441,7 +442,8 @@ public sealed class Pipeline
                 foreach (var f in faces)
                 {
                     if (ReferenceEquals(f.Print, mine.Print)) continue;
-                    if (FaceId.MatchScore(f.Print, me) >= c.face_match - 0.1) continue;
+                    double look = FaceId.MatchScore(f.Print, me), mine2 = FaceId.MatchScore(mine.Print, me);
+                    if (look >= c.face_match + 0.15 || mine2 - look < 0.15) continue;   // only clear cases: you look clearly more like you
                     if (others.Count > 0 && FaceId.MatchScore(f.Print, others) >= 0.9) continue;
                     _learnAt = now;
                     _p.OnLearnedOther?.Invoke(f.Print);
@@ -454,7 +456,8 @@ public sealed class Pipeline
             {
                 _lastFace = ((b.X + b.W / 2.0) / rw, (b.Y + b.H / 2.0) / rh);
                 _me = (_lastFace.cx, _lastFace.cy, Math.Max(0, (b.Y - b.H * 0.6) / rh), Math.Min(1, (b.Y + b.H * 3.0) / rh));
-                _meH = (double)b.H / rh; _meHAt = now; _meHZ = _zoom;
+                bool cut = b.Y <= 2 || b.Y + b.H >= rh - 2 || b.X <= 2 || b.X + b.W >= rw - 2;   // face cut off by the edge: its size is wrong
+                if (!cut) { _meH = (double)b.H / rh; _meHAt = now; _meHZ = _zoom; }
                 _meAt = now;
             }
             else _me = null;
@@ -592,8 +595,19 @@ public sealed class Pipeline
             }
             if (_seenFaces.Count == 0) return false;
             // nearest face, measured in face widths; hands sit beside or below a face, so up/down counts half
-            var nearest = _seenFaces.MinBy(f => Math.Sqrt((h.x - f.cx) * (h.x - f.cx) + 0.25 * (h.y - f.cy) * (h.y - f.cy)) / Math.Max(0.02, f.w));
-            return nearest.me;
+            double Dist((double cx, double cy, double w, bool me) f) => Math.Sqrt((h.x - f.cx) * (h.x - f.cx) + 0.25 * (h.y - f.cy) * (h.y - f.cy)) / Math.Max(0.02, f.w);
+            var nearest = _seenFaces.MinBy(Dist);
+            if (!nearest.me) return false;
+            // ...and the hand has to be part of YOUR outline: a hand reaching in from the side (its owner out of
+            // view) is a separate outline, so it doesn't count even though your face is the only one in view
+            string here = AppContext.BaseDirectory;
+            _seg ??= new Segmenter(Path.Combine(here, "models", "selfie_segmenter.tflite"));
+            var (sr, sw, sh) = Lit(Nv12.SmallRgb(_buf, _w, _h, _zoom, 256));
+            var (m, mw, mh) = _seg.Mask(sr, sw, sh, (long)(now * 1000));
+            var (lab, _) = Label(m, mw, mh);
+            int handBlob = Near(lab, mw, mh, h), meBlob = Near(lab, mw, mh, (nearest.cx, nearest.cy));
+            if (handBlob != 0) return handBlob == meBlob;
+            return Dist(nearest) < 3;                     // hand outside every outline (thin fingers): close to your face is fine
         }
 
         /// <summary>
@@ -609,6 +623,24 @@ public sealed class Pipeline
             double l = faces.Min(f => f.cx - f.w / 2), r = faces.Max(f => f.cx + f.w / 2);
             double top = Math.Max(0, faces.Min(f => f.top) - head * 0.6);
             return new BodyInfo((l + r) / 2, top, box.bottom, Math.Max(box.area, 0.05), now, head, r - l, _allFacesZ);
+        }
+
+        /// <summary>
+        /// In a dark room the AI can't find faces, hands or your outline in the raw picture: brighten its
+        /// small copy (shadows and middle tones lifted, highlights kept) when it's dark.
+        /// </summary>
+        internal static (byte[] rgb, int w, int h) Lit((byte[] rgb, int w, int h) p)
+        {
+            var d = p.rgb;
+            long sum = 0; int n = 0;
+            for (int i = 0; i < d.Length; i += 21) { sum += d[i]; n++; }
+            double mean = (double)sum / Math.Max(1, n);
+            if (mean >= 90) return p;
+            double g = Math.Clamp(Math.Log(0.42) / Math.Log(Math.Max(0.02, mean / 255.0)), 0.35, 1);
+            Span<byte> lut = stackalloc byte[256];
+            for (int v = 0; v < 256; v++) lut[v] = (byte)Math.Clamp(255 * Math.Pow(v / 255.0, g) + 0.5, 0, 255);
+            for (int i = 0; i < d.Length; i++) d[i] = lut[d[i]];
+            return p;
         }
 
         void Run()
@@ -642,7 +674,7 @@ public sealed class Pipeline
                     if (_mask)
                     {
                         _seg ??= new Segmenter(Path.Combine(here, "models", "selfie_segmenter.tflite"));
-                        var (sr, sw, sh) = Nv12.SmallRgb(_buf, _w, _h, _zoom, 256);
+                        var (sr, sw, sh) = Lit(Nv12.SmallRgb(_buf, _w, _h, _zoom, 256));
                         var (m, mw, mh) = _seg.Mask(sr, sw, sh, (long)(now * 1000));
                         if (lockOn) FollowMe(now, m, mw, mh);
                         // keep you clear in the blur: your face if just seen, else the outline being followed
@@ -658,7 +690,7 @@ public sealed class Pipeline
                     if (_gesture)
                     {
                         _rec ??= new GestureRecognizer(Path.Combine(here, "models", "gesture_recognizer.task"));
-                        var (rgb, rw, rh) = Nv12.SmallRgb(_buf, _w, _h, _zoom);
+                        var (rgb, rw, rh) = Lit(Nv12.SmallRgb(_buf, _w, _h, _zoom));
                         var (name, score, hand, handAt) = _rec.Recognize(rgb, rw, rh, (long)(now * 1000));
                         if (hand) _p.LastPerson = now;
                         string? seen = name != null && score >= c.min_score ? name : null;
@@ -698,6 +730,7 @@ public sealed class Pipeline
         }
     }
 
+    internal static (byte[] rgb, int w, int h) LitForTest((byte[] rgb, int w, int h) p) => Ai.Lit(p);
     internal static float[] KeepOneForTest(float[] m, int w, int h, (double x, double y)? seed) => Ai.KeepOne(m, w, h, seed);
 
     /// <summary>

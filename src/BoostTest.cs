@@ -53,6 +53,34 @@ static class BoostTest
             Save(last!, Path.Combine(dir, $"after_{mode}.png"));
             lines.Add($"{mode}: {ms / frames.Count:0.0} ms a picture, brightening x{b.Lift:0.00}, average brightness {Mean(frames[^1]):0} -> {Mean(last!):0}");
         }
+        // does brightening the AI's copy help it find the face in the dark?
+        string here = AppContext.BaseDirectory;
+        using (var id = new FaceId(Path.Combine(here, "models", "face_detector.tflite"), Path.Combine(here, "models", "face_embedder.tflite")))
+        {
+            int nRaw = 0, nLit = 0;
+            foreach (var f in frames)
+            {
+                var a = Nv12.SmallRgb(f.Data, f.W, f.H, 1, 640);
+                if (id.Faces(a.rgb, a.w, a.h).Count > 0) nRaw++;
+                var b = Pipeline.LitForTest(Nv12.SmallRgb(f.Data, f.W, f.H, 1, 640));
+                if (id.Faces(b.rgb, b.w, b.h).Count > 0) nLit++;
+            }
+            lines.Add($"face found: raw picture {nRaw}/{frames.Count}, brightened {nLit}/{frames.Count}");
+            var me = Config.Load().me_faces;
+            if (me.Count > 0)
+            {
+                var sr = new List<double>(); var sl = new List<double>();
+                for (int k = 0; k < frames.Count; k += 3)
+                {
+                    var f = frames[k];
+                    var a = Nv12.SmallRgb(f.Data, f.W, f.H, 1, 640);
+                    foreach (var x in id.Faces(a.rgb, a.w, a.h)) sr.Add(FaceId.MatchScore(x.Print, me));
+                    var b = Pipeline.LitForTest(Nv12.SmallRgb(f.Data, f.W, f.H, 1, 640));
+                    foreach (var x in id.Faces(b.rgb, b.w, b.h)) sl.Add(FaceId.MatchScore(x.Print, me));
+                }
+                lines.Add($"likeness to your saved face: raw avg {sr.DefaultIfEmpty().Average():0.00} (min {sr.DefaultIfEmpty().Min():0.00}), brightened avg {sl.DefaultIfEmpty().Average():0.00} (min {sl.DefaultIfEmpty().Min():0.00})");
+            }
+        }
         File.WriteAllLines(Path.Combine(dir, "boost.txt"), lines);
         return 0;
     }
