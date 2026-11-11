@@ -8,14 +8,23 @@ static class Program
     static void Main(string[] args)
     {
         if (args.Length >= 2 && args[0] == "--selftest") { Environment.Exit(SelfTest.Run(args[1])); return; }
-        if (args.Length >= 2 && args[0] == "--speedtest") { Environment.Exit(SpeedTest.Run(args[1])); return; }
+        if (args.Length >= 2 && args[0] == "--speedtest")
+        {
+            int rc = 0;
+            var t = new Thread(() => rc = SpeedTest.Run(args[1]));
+            if (Environment.GetEnvironmentVariable("NOCAT_STA") != "1") t.SetApartmentState(ApartmentState.MTA);
+            else t.SetApartmentState(ApartmentState.STA);
+            t.Start(); t.Join();
+            Environment.Exit(rc); return;
+        }
+        if (args.Length >= 2 && args[0] == "--switchtest") { Environment.Exit(SwitchTest.Run(args[1])); return; }
         if (args.Length >= 1 && args[0] == "--auto-exposure")
         {
             // repair tool: put the camera back on automatic exposure
             using var cap = Capture.Open("EMEET PIXY", 1920, 1080, 30, out _);
             if (cap == null) { Environment.Exit(1); return; }
             bool done = false;                       // the camera only takes changes while pictures flow
-            var reader = new Thread(() => { var f = new byte[cap.Width * cap.Height * 3 / 2]; while (!done) cap.Read(f); });
+            var reader = new Thread(() => { var b = new byte[1 << 20]; while (!done) cap.Read(ref b, false); });
             reader.Start();
             for (int i = 0; i < 10; i++) Thread.Sleep(100);
             bool ok = PictureControls.Set(cap, "Exposure", -5, auto: true);

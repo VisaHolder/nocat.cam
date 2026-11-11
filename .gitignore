@@ -5,3 +5,4 @@ publish/
 .vs/
 native/libmediapipe.dll
 publish-zip/
+native/turbojpeg.dll

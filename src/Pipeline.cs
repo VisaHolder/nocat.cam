@@ -28,6 +28,8 @@ public sealed class Pipeline
     readonly string _here = AppContext.BaseDirectory;
     Thread? _thread;
     volatile bool _stop;
+    readonly ManualResetEvent _stopEvent = new(false);
+    VirtualCam? _liveVcam;                           // so Stop() can tell readers "stopping" even if the loop is stuck
 
     public string Status { get; private set; } = "starting";
     public double LastPerson { get; internal set; } = Now;
@@ -63,7 +65,13 @@ public sealed class Pipeline
         _thread = new Thread(Run) { IsBackground = true, Name = "pipeline", Priority = ThreadPriority.AboveNormal };
         _thread.Start();
     }
-    public void Stop() { _stop = true; _thread?.Join(3000); }
+    public void Stop()
+    {
+        _stop = true;
+        _stopEvent.Set();
+        if (_thread != null && !_thread.Join(3000))
+            _liveVcam?.MarkStopping();               // loop stuck (camera hung): don't leave Discord on a frozen frame
+    }
 
     void SetStatus(string s)
     {
@@ -83,7 +91,10 @@ public sealed class Pipeline
         Capture? cap = null;
         VirtualCam? vcam = null;
         string? capKey = null, vcamKey = null;
-        byte[]? frame = null;
+        byte[] jpeg = new byte[1 << 20];            // the camera's compressed picture
+        Nv12? frame = null;                          // decoded (already shrunk to what's needed)
+        TurboJpeg? tj = null;
+        int badPictures = 0;
         Nv12? outFrame = null;
         double nextGesture = 0, nextPresence = 0, lastSend = 0, vcamFailedUntil = 0, retry = 3, perfLogAt = 0;
         int fpsN = 0; double fpsT = Now;
@@ -91,12 +102,14 @@ public sealed class Pipeline
         var log = Log.Instance;
 
         void CloseCap() { cap?.Dispose(); cap = null; capKey = null; Camera = null; Streaming = false; }
-        void CloseVcam() { vcam?.Dispose(); vcam = null; vcamKey = null; }
+        void CloseVcam() { vcam?.Dispose(); vcam = null; vcamKey = null; _liveVcam = null; }
 
         try
         {
             while (!_stop)
             {
+              try
+              {
                 var c = _cfg();
                 double now = Now;
                 bool wantVcam = c.virtual_cam && now >= vcamFailedUntil;
@@ -110,17 +123,23 @@ public sealed class Pipeline
                     var key = c.vcam_size + "@" + c.fps;
                     if (vcamKey != key)
                     {
-                        CloseVcam();
                         var (vw, vh) = Size(c.vcam_size);
-                        vcam = VirtualCam.TryCreate(vw, vh, c.fps);
-                        if (vcam == null)
+                        // change size/fps in place: apps already showing nocat.cam keep showing it
+                        if (vcam == null || !vcam.Configure(vw, vh, c.fps))
                         {
-                            vcamFailedUntil = now + 15;
-                            SetStatus("virtual camera busy (is OBS's own virtual camera on?)");
-                            continue;
+                            CloseVcam();
+                            vcam = VirtualCam.TryCreate(vw, vh, c.fps, out var why);
+                            if (vcam == null)
+                            {
+                                vcamFailedUntil = now + 5;
+                                SetStatus(why ?? "virtual camera busy");
+                                _stopEvent.WaitOne(500);
+                                continue;
+                            }
                         }
                         vcamKey = key;
-                        outFrame = new Nv12(vw, vh);
+                        _liveVcam = vcam;
+                        if (outFrame == null || outFrame.W != vw || outFrame.H != vh) outFrame = new Nv12(vw, vh);
                         log.Info($"virtual camera on at {vw}x{vh} {c.fps} fps");
                     }
                 }
@@ -139,12 +158,14 @@ public sealed class Pipeline
                     }
                     if (camAsleep) SetStatus("asleep");
                     else if (!c.virtual_cam) SetStatus("off (virtual camera is off)");
-                    Thread.Sleep(100);
+                    _stopEvent.WaitOne(100);
                     continue;
                 }
 
-                // 60 fps: the camera's own 1080p60 mode. 30 fps: the chosen capture size (4K = sharpest).
-                var ck = c.fps == 60 ? "1920x1080@60" : c.capture_size + "@30";
+                // Up to 1080p out: read the camera's own 1080p mode - it runs up to 60 fps and keeps 30 in dim
+                // light (its 4K mode drops to 20 in dim light, which looked choppy). 1440p/4K out: the 4K mode.
+                bool small = c.vcam_size is "1920x1080" or "1280x720";
+                var ck = small ? "1920x1080@" + (c.fps == 60 ? 60 : 30) : c.capture_size + "@30";
                 if (capKey != ck)
                 {
                     CloseCap();
@@ -154,18 +175,18 @@ public sealed class Pipeline
                     {
                         SetStatus(err ?? "camera in use by another app");
                         if (vcam != null) SendCard(vcam, "card_idle.png");
-                        Thread.Sleep((int)(retry * 1000));
+                        _stopEvent.WaitOne((int)(retry * 1000));
                         retry = Math.Min(30, retry * 2);
                         continue;
                     }
                     retry = 3;
                     capKey = ck;
                     Camera = cap;
-                    frame = new byte[cap.Width * cap.Height * 3 / 2];
+                    tj ??= new TurboJpeg();
                     CaptureInfo = $"{cap.Width}x{cap.Height}";
                     LastPerson = OpenedAt = Now;
                     Streaming = true;
-                    log.Info($"camera opened at {cap.Width}x{cap.Height} {cap.Fps} fps");
+                    log.Info($"camera opened at {cap.Width}x{cap.Height} {cap.Fps} fps (camera mode {cap.Native})");
                     CameraOpened?.Invoke();
                 }
 
@@ -181,17 +202,27 @@ public sealed class Pipeline
                 bool needPicture = (send && !soft) || handAi;
 
                 var t0 = Stopwatch.GetTimestamp();
-                if (!cap!.Read(needPicture ? frame : null)) { CloseCap(); Thread.Sleep(1000); continue; }
+                int got = cap!.Read(ref jpeg, needPicture);
                 readTicks += Stopwatch.GetTimestamp() - t0;
-                if (!needPicture) continue;
+                if (got < 0) { CloseCap(); log.Info("camera stopped sending - reopening"); _stopEvent.WaitOne(1000); continue; }
+                if (got == 0 || !needPicture) continue;
                 t0 = Stopwatch.GetTimestamp();
+
+                // decode, shrinking on the way: only as big as the picture we send (or the AI needs)
+                int needW = (int)Math.Ceiling(((send && !soft) ? outFrame!.W : 640) * zoom);
+                try { tj!.DecodeNv12(jpeg.AsSpan(0, got), TurboJpeg.Eighths(cap.Width, needW), ref frame); badPictures = 0; }
+                catch (Exception e)
+                {
+                    if (++badPictures == 30) log.Info("camera pictures won't decode: " + e.Message);
+                    continue;                        // skip a damaged picture
+                }
 
                 // ---- AI runs on its own thread with a copy of this picture, so video never waits for it
                 if (handAi)
                 {
                     if (gestureDue) nextGesture = now + GestureEvery;
                     if (presenceDue) nextPresence = now + (WantBody ? 0.2 : 1);
-                    _ai.Submit(frame!, cap.Width, cap.Height, zoom, gestureDue, presenceDue || maskDue, presenceDue, c);
+                    _ai.Submit(frame!.Data, frame.W, frame.H, zoom, gestureDue, presenceDue || maskDue, presenceDue, c);
                 }
 
                 // ---- virtual camera picture
@@ -200,7 +231,7 @@ public sealed class Pipeline
                     if (soft) SendCard(vcam!, "card_asleep.png");
                     else
                     {
-                        Nv12.ZoomInto(frame!, cap.Width, cap.Height, zoom, outFrame!);
+                        Nv12.ZoomInto(frame!.Data, frame.W, frame.H, zoom, outFrame!);
                         var m = _ai.Mask;
                         if (bg != "off" && m.mask != null)
                         {
@@ -228,6 +259,14 @@ public sealed class Pipeline
 
                 SetStatus(detect ? "watching" : "virtual camera only");
                 if (!detect) _ai.ClearGesture();
+              }
+              catch (Exception e)
+              {
+                  // never let one error stop the video: log it, reopen the camera, carry on
+                  log.Info("video error, recovering: " + e.Message);
+                  CloseCap();
+                  _stopEvent.WaitOne(1000);
+              }
             }
         }
         catch (Exception e) { log.Info("pipeline stopped: " + e); }
@@ -235,6 +274,7 @@ public sealed class Pipeline
         {
             CloseCap(); CloseVcam();
             _ai.Dispose();
+            tj?.Dispose();
         }
     }
 
@@ -333,8 +373,8 @@ public sealed class Pipeline
 
         public void Dispose()
         {
-            _stop = true; _go.Set(); _t.Join(2000);
-            _rec?.Dispose(); _seg?.Dispose();
+            _stop = true; _go.Set();
+            if (_t.Join(3000)) { _rec?.Dispose(); _seg?.Dispose(); }   // still busy: let the process clean up
         }
     }
 
@@ -374,7 +414,10 @@ public sealed class Pipeline
     Nv12? Picture(string path, int w, int h)
     {
         if (string.IsNullOrEmpty(path)) path = Path.Combine(_here, "assets", "card_idle.png");
-        var key = $"{path}|{w}x{h}";
+        long stamp = 0;
+        try { stamp = File.GetLastWriteTimeUtc(path).Ticks; } catch { }
+        var key = $"{path}|{stamp}|{w}x{h}";
+        if (_pics.Count > 6 && !_pics.ContainsKey(key)) _pics.Clear();     // only a handful are ever in use
         if (_pics.TryGetValue(key, out var hit)) return hit;
         Nv12? result = null;
         try

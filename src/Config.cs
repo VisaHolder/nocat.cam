@@ -12,7 +12,7 @@ public sealed class Config
     public string vcam_size { get; set; } = "1920x1080";
     public string capture_size { get; set; } = "3840x2160";
     public bool fixed_exposure { get; set; }
-    public int fps { get; set; } = 30;                 // 30, or 60 for 1080p and smaller
+    public int fps { get; set; } = 60;                 // 60 for 1080p and smaller (the camera slows itself in dim light), 30 for 1440p/4K
     public double zoom { get; set; } = 1.0;
     public double zoom_step { get; set; } = 0.1;
     public double glide_s { get; set; } = 1.5;
@@ -41,6 +41,10 @@ public sealed class Config
     public static readonly string FilePath = Path.Combine(Dir, "config.json");
     static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
     static readonly object Gate = new();
+
+    /// <summary>Run something that reads or changes the settings' lists/maps, safely across threads.</summary>
+    public T Locked<T>(Func<T> f) { lock (Gate) return f(); }
+    public void Locked(Action f) { lock (Gate) f(); }
 
     public static bool Exists => File.Exists(FilePath);
 
@@ -71,7 +75,8 @@ public sealed class Config
         min_score = Math.Clamp(min_score, 0.3, 0.95);
         bg_blur = Math.Clamp(bg_blur, 1, 10);
         if (track_style is not ("camera" or "body")) track_style = "camera";
-        if (fps != 60 || vcam_size is "3840x2160" or "2560x1440") fps = 30;   // the camera does 60 only up to 1080p
+        if (fps != 30 && fps != 60) fps = 60;
+        if (vcam_size is "3840x2160" or "2560x1440") fps = 30;               // the camera does 60 only up to 1080p
     }
 
     public void Save()
@@ -80,7 +85,7 @@ public sealed class Config
         {
             Directory.CreateDirectory(Dir);
             var tmp = FilePath + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(this, Json));
+            File.WriteAllText(tmp, JsonSerializer.Serialize(this, Json));        // (under Gate: no list changes mid-write)
             File.Move(tmp, FilePath, true);
         }
     }
@@ -99,5 +104,5 @@ public sealed class Config
         return true;
     }
 
-    public JsonNode ToJson() => JsonSerializer.SerializeToNode(this)!;
+    public JsonNode ToJson() { lock (Gate) return JsonSerializer.SerializeToNode(this)!; }
 }

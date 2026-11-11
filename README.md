@@ -19,11 +19,13 @@ Windows 10/11 x64, .NET 10.
 - **Sleep**: *privacy* (camera turns away and is released, so its in-use light goes off) or *soft*
   (camera stays on, apps see a "camera asleep" card, and a gesture can wake it). Optional auto-sleep
   when nobody is in view or no app is using nocat.cam, and auto-wake when an app starts using it.
-- **Picture**: brightness, contrast, white balance, exposure, focus and more, plus a *Smooth 30 fps* switch
-  (dim rooms drop auto exposure to 20 fps).
-- **Light on resources**: pictures stay in the camera's own NV12 format end to end (Windows decodes the
-  camera's MJPEG in hardware), and when no app shows nocat.cam it only sends 2 pictures a second.
-  Measured on a Ryzen 9800X3D: about 0.5% CPU idle, ~2.5% while Discord shows you at 1080p.
+- **Picture**: brightness, contrast, white balance, exposure, focus and more, plus a *Fixed exposure* switch for bright rooms
+  (in dim rooms auto exposure slows the camera).
+- **Light on resources**: the camera's MJPEG pictures are read through DirectShow and decoded by libjpeg-turbo
+  straight to the size being sent (4K to 1080p while decoding), then stay NV12 to the virtual camera. When no
+  app shows nocat.cam it only sends 2 pictures a second. About 1-2% CPU on a Ryzen 9800X3D.
+- **Frame rate**: 1080p/720p up to 60 fps (the camera's 1080p mode), 1440p/4K 30. In dim light the PIXY slows
+  itself down (1080p mode 60 -> 30, 4K mode 30 -> 20), so for Discord 1080p at 60 is the smoothest choice.
 
 ## Setup
 
@@ -41,6 +43,7 @@ Settings live in `%APPDATA%\nocat.cam\config.json`, the log next to it. To move 
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\get-mediapipe.ps1   # fetches libmediapipe.dll (68 MB) from PyPI
+powershell -ExecutionPolicy Bypass -File tools\get-turbojpeg.ps1   # fetches turbojpeg.dll from the official libjpeg-turbo release
 dotnet build -c Release
 dotnet publish -c Release -o publish
 ```
@@ -64,6 +67,7 @@ camera's HID interface (VID 328F, PID 00C0, report 0x09):
 
 - [MediaPipe](https://github.com/google-ai-edge/mediapipe) (Google, Apache 2.0): `libmediapipe.dll`, the
   gesture recogniser and selfie segmenter models in `models\`.
-- [HidSharp](https://www.zer7.com/software/hidsharp) (Apache 2.0), [Vortice.Windows](https://github.com/amerkoleci/Vortice.Windows) (MIT),
+- [libjpeg-turbo](https://libjpeg-turbo.org/) (BSD/IJG): `turbojpeg.dll`.
+- [HidSharp](https://www.zer7.com/software/hidsharp) (Apache 2.0),
   [Microsoft WebView2](https://developer.microsoft.com/microsoft-edge/webview2/).
 - The virtual camera driver is [OBS Studio](https://obsproject.com/)'s (GPL 2.0), used as installed; nocat.cam only writes pictures to it.

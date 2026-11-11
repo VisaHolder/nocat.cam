@@ -120,7 +120,7 @@ public sealed class Bridge
                     ["tracking"] = _app.TrackingOn,
                     ["asleep"] = _app.Asleep,
                     ["zoom"] = c.zoom,
-                    ["positions"] = JsonSerializer.SerializeToNode(c.positions),
+                    ["positions"] = c.Locked(() => JsonSerializer.SerializeToNode(c.positions)),
                     ["hotkeys_failed"] = JsonSerializer.SerializeToNode(_app.Keys.Failed),
                 };
             }
@@ -131,17 +131,17 @@ public sealed class Bridge
                 if (!c.Set(key, a[1]?.DeepClone())) return false;
                 c.Save();
                 if (key == "fixed_exposure") _app.ApplyExposure(c.fixed_exposure);
-                return c.ToJson();                       // the page re-reads: changing one setting can adjust another
                 if (key == "track_style" && _app.TrackingOn) _app.Run("tracking");   // switch style straight away
+                return c.ToJson();                       // the page re-reads: changing one setting can adjust another
                 return true;
             }
             case "set_gesture":
-                c.gesture_actions[S(a, 0)] = Actions.All.ContainsKey(S(a, 1)) ? S(a, 1) : "none";
+                c.Locked(() => c.gesture_actions[S(a, 0)] = Actions.All.ContainsKey(S(a, 1)) ? S(a, 1) : "none");
                 c.Save(); return true;
             case "set_gesture_hold":
             {
                 double v = a[1]?.GetValue<double>() ?? 0;
-                if (v > 0) c.gesture_hold[S(a, 0)] = Math.Clamp(v, 0.3, 10); else c.gesture_hold.Remove(S(a, 0));
+                c.Locked(() => { if (v > 0) c.gesture_hold[S(a, 0)] = Math.Clamp(v, 0.3, 10); else c.gesture_hold.Remove(S(a, 0)); });
                 c.Save(); return true;
             }
             case "pause_hotkeys": _app.Keys.Unbind(); return true;
@@ -149,7 +149,7 @@ public sealed class Bridge
             {
                 var combo = S(a, 1);
                 if (combo != "" && !Hotkeys.TryParse(combo, out _, out _)) { _app.Keys.Bind(c.hotkeys); return false; }
-                c.hotkeys[S(a, 0)] = combo;
+                c.Locked(() => c.hotkeys[S(a, 0)] = combo);
                 c.Save();
                 _app.Keys.Bind(c.hotkeys);
                 return !_app.Keys.Failed.Contains(combo);
@@ -159,7 +159,7 @@ public sealed class Bridge
             case "get_auto_privacy": return _app.Cam.GetAutoPrivacy();
             case "set_auto_privacy": return _app.Cam.SetAutoPrivacy((int)a[0]!.GetValue<double>());
             case "save_position": return JsonSerializer.SerializeToNode(_app.SavePosition(S(a, 0)));
-            case "clear_position": c.positions.Remove(S(a, 0)); c.Save(); return true;
+            case "clear_position": c.Locked(() => c.positions.Remove(S(a, 0))); c.Save(); return true;
             case "set_startup": App.StartupEnabled = a[0]!.GetValue<bool>(); return true;
             case "pick_bg":
             {

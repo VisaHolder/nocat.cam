@@ -51,23 +51,29 @@ static class SelfTest
             Check("open camera at 4K", cap != null, cap != null ? $"{cap.Width}x{cap.Height}" : err ?? "");
             if (cap != null)
             {
-                var frame = new byte[cap.Width * cap.Height * 3 / 2];
-                for (int i = 0; i < 10; i++) cap.Read(frame);
+                using var tj = new TurboJpeg();
+                var jb = new byte[1 << 20];
+                Nv12? f = null;
+                int eighths = TurboJpeg.Eighths(cap.Width, 1920);       // 4K camera picture decoded straight to 1080p
+                bool Next() { int g = cap.Read(ref jb); if (g <= 0) return false; tj.DecodeNv12(jb.AsSpan(0, g), eighths, ref f); return true; }
+                for (int i = 0; i < 10; i++) Next();
                 var proc = Process.GetCurrentProcess();
                 var cpu0 = proc.TotalProcessorTime; var sw = Stopwatch.StartNew(); int n = 0;
-                while (sw.Elapsed.TotalSeconds < 4) { if (cap.Read(frame)) n++; }
+                while (sw.Elapsed.TotalSeconds < 4) { if (Next()) n++; }
                 proc.Refresh();
                 double cpu = (proc.TotalProcessorTime - cpu0).TotalSeconds / sw.Elapsed.TotalSeconds / Environment.ProcessorCount * 100;
-                Check("camera pictures arriving", n > 40, $"{n / sw.Elapsed.TotalSeconds:0.0} fps, {cpu:0.0}% of PC to read + decode");
-                long sum = 0; for (int i = 0; i < cap.Width * cap.Height; i += 997) sum += frame[i];
+                double camRate = n / sw.Elapsed.TotalSeconds;
+                Check("camera pictures arriving + decoding", n > 40, $"{n / sw.Elapsed.TotalSeconds:0.0} fps, {cpu:0.0}% of PC, camera {cap.Native}, decoded {f?.W}x{f?.H}");
+                long sum = 0; for (int i = 0; i < f!.W * f.H; i += 997) sum += f.Data[i];
                 Check("picture isn't blank", sum > 0);
+                var frame = f.Data;
 
                 // ---- picture controls
                 var pc = PictureControls.Read(cap);
                 Check("camera picture controls", pc.Count >= 5, string.Join(", ", pc.Keys));
 
                 // ---- AI
-                var (rgb, rw, rh) = Nv12.SmallRgb(frame, cap.Width, cap.Height, 1);
+                var (rgb, rw, rh) = Nv12.SmallRgb(f.Data, f.W, f.H, 1);
                 using (var rec = new GestureRecognizer(Path.Combine(here, "models", "gesture_recognizer.task")))
                 {
                     var t = Stopwatch.StartNew();
@@ -76,7 +82,7 @@ static class SelfTest
                 }
                 using (var seg = new Segmenter(Path.Combine(here, "models", "selfie_segmenter.tflite")))
                 {
-                    var (sr, sw2, sh2) = Nv12.SmallRgb(frame, cap.Width, cap.Height, 1, 256);
+                    var (sr, sw2, sh2) = Nv12.SmallRgb(f.Data, f.W, f.H, 1, 256);
                     var t = Stopwatch.StartNew();
                     var (mask, mw, mh) = seg.Mask(sr, sw2, sh2, 1);
                     int on = mask.Count(v => v > 0.5f);
@@ -84,38 +90,39 @@ static class SelfTest
                 }
 
                 // ---- virtual camera
-                using var vc = VirtualCam.TryCreate(1920, 1080);
-                Check("virtual camera started", vc != null, vc == null ? "busy - is another copy or OBS's virtual camera running?" : "");
+                using var vc = VirtualCam.TryCreate(1920, 1080, 30, out var vwhy);
+                Check("virtual camera started", vc != null, vwhy ?? "");
                 if (vc != null)
                 {
                     var outF = new Nv12(1920, 1080);
                     var t = Stopwatch.StartNew(); int sent = 0;
-                    while (t.Elapsed.TotalSeconds < 3) { cap.Read(frame); Nv12.ZoomInto(frame, cap.Width, cap.Height, 1, outF); vc.Send(outF.Data); sent++; }
-                    Check("sending to virtual camera", sent > 30, $"{sent / t.Elapsed.TotalSeconds:0.0} fps at 1080p");
+                    while (t.Elapsed.TotalSeconds < 3) { if (!Next()) continue; Nv12.ZoomInto(f.Data, f.W, f.H, 1, outF); vc.Send(outF.Data); sent++; }
+                    Check("sending to virtual camera keeps up with the camera", sent / t.Elapsed.TotalSeconds >= camRate * 0.9, $"{sent / t.Elapsed.TotalSeconds:0.0} fps at 1080p, camera gives {camRate:0.0}");
                     // let an outside reader (the test script) grab a frame now if it wants
                     var flag = outPath + ".vcam-ready";
                     File.WriteAllText(flag, "1");
                     var until = Stopwatch.StartNew();
                     while (until.Elapsed.TotalSeconds < 8)
                     {
-                        cap.Read(frame); Nv12.ZoomInto(frame, cap.Width, cap.Height, 1, outF); vc.Send(outF.Data);
+                        if (!Next()) continue; Nv12.ZoomInto(f.Data, f.W, f.H, 1, outF); vc.Send(outF.Data);
                         if (until.Elapsed.TotalSeconds > 4 && until.Elapsed.TotalSeconds < 4.2)
                             Note("apps reading nocat.cam: " + string.Join(", ", VcamUsers.Readers().Select(p => { try { return Process.GetProcessById(p).ProcessName; } catch { return p.ToString(); } })));
                     }
                     File.Delete(flag);
                     // blur cost
                     var t2 = Stopwatch.StartNew(); int nb = 0;
-                    var (mrgb, mw2, mh2) = Nv12.SmallRgb(frame, cap.Width, cap.Height, 1, 256);
+                    var (mrgb, mw2, mh2) = Nv12.SmallRgb(f.Data, f.W, f.H, 1, 256);
                     using var seg2 = new Segmenter(Path.Combine(here, "models", "selfie_segmenter.tflite"));
                     while (t2.Elapsed.TotalSeconds < 3)
                     {
-                        cap.Read(frame); Nv12.ZoomInto(frame, cap.Width, cap.Height, 1, outF);
-                        (mrgb, mw2, mh2) = Nv12.SmallRgb(frame, cap.Width, cap.Height, 1, 256);
+                        if (!Next()) continue;
+                        Nv12.ZoomInto(f.Data, f.W, f.H, 1, outF);
+                        (mrgb, mw2, mh2) = Nv12.SmallRgb(f.Data, f.W, f.H, 1, 256);
                         var (m, a, b) = seg2.Mask(mrgb, mw2, mh2, 1000 + nb);
                         Nv12.Blend(outF, Nv12.Blurred(outF, 6), m, a, b);
                         vc.Send(outF.Data); nb++;
                     }
-                    Check("background blur keeps up", nb / t2.Elapsed.TotalSeconds > 15, $"{nb / t2.Elapsed.TotalSeconds:0.0} fps");
+                    Check("background blur keeps up with the camera", nb / t2.Elapsed.TotalSeconds >= camRate * 0.9, $"{nb / t2.Elapsed.TotalSeconds:0.0} fps, camera gives {camRate:0.0}");
                 }
             }
         }

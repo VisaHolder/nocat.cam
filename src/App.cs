@@ -226,7 +226,7 @@ public sealed class App : IDisposable
         var pos = Cam.Position();
         if (pos == null) { Notify?.Invoke("Couldn't read the camera position"); return null; }
         var p = new[] { Math.Round(pos.Value.pan, 3), Math.Round(pos.Value.tilt, 3), Cfg.zoom };
-        Cfg.positions[slot] = p;
+        Cfg.Locked(() => Cfg.positions[slot] = p);
         Cfg.Save();
         Notify?.Invoke($"Saved position {slot}");
         return p;
@@ -256,16 +256,21 @@ public sealed class App : IDisposable
         {
             Thread.Sleep(2000);
             if (!Monitor.TryEnter(_doLock)) continue;   // a command is running; don't read half-way
-            int? m;
-            try { m = Cam.GetMode(); } finally { Monitor.Exit(_doLock); }
-            if (m != null && m != Mode)
+            bool changed = false;
+            try
             {
-                Mode = m;
-                CamAsleep = m == Pixy.Sleep;
-                if (m == Pixy.Tracking) BodyTracking = false;   // the palm gesture switched to the camera's own tracking
-                if (!CamAsleep && AutoSlept != null && !SoftAsleep) AutoSlept = null;
-                Changed?.Invoke();
+                var m = Cam.GetMode();
+                if (m != null && m != Mode)
+                {
+                    Mode = m;
+                    CamAsleep = m == Pixy.Sleep;
+                    if (m == Pixy.Tracking) BodyTracking = false;   // the palm gesture switched to the camera's own tracking
+                    if (!CamAsleep && AutoSlept != null && !SoftAsleep) AutoSlept = null;
+                    changed = true;
+                }
             }
+            finally { Monitor.Exit(_doLock); }
+            if (changed) Changed?.Invoke();
         }
     }
 

@@ -3,48 +3,17 @@ using System.Diagnostics;
 namespace NocatCam;
 
 /// <summary>
-/// nocat.cam.exe --speedtest out.txt : for every output size and frame rate, runs the real
-/// camera -> resize -> virtual camera path for a few seconds and reports the frame rate reached
-/// and how long each picture takes. Also checks which exposure settings let the camera keep up.
-/// Exposure is put back how it was afterwards.
+/// nocat.cam.exe --speedtest out.txt : for every output size and frame rate, runs the real path
+/// (camera MJPEG -> libjpeg-turbo decode -> resize -> virtual camera) for a few seconds with auto
+/// exposure, and reports the frame rate reached and the work per picture.
 /// </summary>
 static class SpeedTest
 {
     public static int Run(string outPath)
     {
         var lines = new List<string>();
+        void Flush() { try { File.WriteAllLines(outPath + ".partial", lines); } catch { } }
         int fails = 0;
-        Capture? probe = Capture.Open("EMEET PIXY", 1920, 1080, 30, out var err);
-        if (probe == null) { File.WriteAllLines(outPath, ["FAIL camera: " + err]); return 1; }
-        var before = PictureControls.Read(probe);
-        lines.Add("picture controls now: " + string.Join(", ", before.Select(kv => $"{kv.Key}={kv.Value.value}{(kv.Value.auto ? " auto" : "")}")));
-        probe.Dispose();
-
-        // 1) what keeps the frame rate up: auto exposure, with "auto-exposure priority" on and off
-        using (var cap = Capture.Open("EMEET PIXY", 1920, 1080, 60, out err))
-        {
-            if (cap != null)
-            {
-                lines.Add($"     camera mode opened: {cap.Width}x{cap.Height} @ {cap.Fps}");
-                var aep = PictureControls.RawCameraControl(cap, PictureControls.AutoExposurePriority);
-                lines.Add("     auto-exposure priority control: " + (aep == null ? "not available" : $"range {aep.Value.min}..{aep.Value.max}, now {aep.Value.value}"));
-                var frame = new byte[cap.Width * cap.Height * 3 / 2];
-                foreach (var (label, val, auto, prio) in new (string, int, bool, int)[]
-                         { ("auto, priority 1", -5, true, 1), ("auto, priority 0", -5, true, 0), ("-5 fixed", -5, false, 0) })
-                {
-                    if (aep != null) PictureControls.SetRawCameraControl(cap, PictureControls.AutoExposurePriority, prio);
-                    PictureControls.Set(cap, "Exposure", val, auto);
-                    for (int i = 0; i < 20; i++) cap.Read(frame);
-                    var rb = PictureControls.Read(cap)["Exposure"];
-                    int n = 0; var sw = Stopwatch.StartNew();
-                    while (sw.Elapsed.TotalSeconds < 3) { cap.Read(frame); n++; }
-                    long sum = 0; for (int i = 0; i < cap.Width * cap.Height; i += 101) sum += frame[i];
-                    double bright = sum / (double)(cap.Width * cap.Height / 101);
-                    lines.Add($"     exposure {label}: camera gives {n / sw.Elapsed.TotalSeconds:0.0} fps, brightness {bright:0} (read back {rb.value}{(rb.auto ? " auto" : "")})");
-                }
-            }
-        }
-
         (string send, int fps, string capture)[] modes =
         [
             ("3840x2160", 30, "3840x2160"),
@@ -53,43 +22,62 @@ static class SpeedTest
             ("1920x1080", 60, "1920x1080"),
             ("1280x720", 60, "1920x1080"),
         ];
+        using var tj = new TurboJpeg();
+        foreach (var m in Capture.Modes("EMEET PIXY")) lines.Add("     mode " + m);
+
+        // what's slowing the camera: auto-exposure priority (via the driver directly)
+        using (var probe = Capture.Open("EMEET PIXY", 1920, 1080, 60, out var perr))
+        {
+            if (probe != null)
+            {
+                var jb = new byte[1 << 20];
+                int Rate() { for (int i = 0; i < 10; i++) probe.Read(ref jb, false); int k = 0; var w = Stopwatch.StartNew(); while (w.Elapsed.TotalSeconds < 3) if (probe.Read(ref jb, false) > 0) k++; return (int)Math.Round(k / w.Elapsed.TotalSeconds); }
+                var aep = KsControl.GetCameraControl(probe, KsControl.AutoExposurePriority);
+                int a0 = probe.Arrived; var tw = System.Diagnostics.Stopwatch.StartNew(); int taken = Rate(); double secs = tw.Elapsed.TotalSeconds;
+                lines.Add($"     1080p60 mode ({probe.Native}): taken {taken} fps, but the camera DELIVERED {(probe.Arrived - a0) / secs:0.0} fps");
+                bool set0 = KsControl.SetCameraControl(probe, KsControl.AutoExposurePriority, 0);
+                lines.Add($"     set priority 0: {(set0 ? "ok" : "refused")}, now reads {KsControl.GetCameraControl(probe, KsControl.AutoExposurePriority)?.ToString() ?? "?"}, camera gives {Rate()} fps");
+                // one decode attempt, to see any error
+                int got = probe.Read(ref jb);
+                try { Nv12? f = null; tj.DecodeNv12(jb.AsSpan(0, got), 8, ref f); lines.Add($"     decode ok: {f!.W}x{f.H}"); }
+                catch (Exception e) { lines.Add($"     decode error: {e.Message}; first bytes {BitConverter.ToString(jb, 0, Math.Min(16, Math.Max(0, got)))} (size {got})"); }
+            }
+            else lines.Add("     probe: " + perr);
+        }
+
         foreach (var (send, fps, capture) in modes)
         {
             var (cw, ch) = Parse(capture);
             var (ow, oh) = Parse(send);
-            using var cap = Capture.Open("EMEET PIXY", cw, ch, fps, out err);
+            using var cap = Capture.Open("EMEET PIXY", cw, ch, fps, out var err);
             if (cap == null) { lines.Add($"FAIL {send}@{fps}: {err}"); fails++; continue; }
-            PictureControls.Set(cap, "Exposure", -5, auto: true);
-            PictureControls.SetRawCameraControl(cap, PictureControls.AutoExposurePriority, 0);
-            using var vc = VirtualCam.TryCreate(ow, oh, fps);
-            if (vc == null) { lines.Add($"FAIL {send}@{fps}: virtual camera busy"); fails++; continue; }
-            var frame = new byte[cap.Width * cap.Height * 3 / 2];
+            using var vc = VirtualCam.TryCreate(ow, oh, fps, out var why);
+            if (vc == null) { lines.Add($"FAIL {send}@{fps}: {why}"); fails++; continue; }
+            var jpeg = new byte[1 << 20];
+            Nv12? frame = null;
             var outF = new Nv12(ow, oh);
-            for (int i = 0; i < 20; i++) cap.Read(frame);
-            int n = 0; long work = 0;
+            int eighths = TurboJpeg.Eighths(cap.Width, ow);
+            for (int i = 0; i < 15; i++) cap.Read(ref jpeg, false);
+            int n = 0, bad = 0; long work = 0;
             var sw = Stopwatch.StartNew();
             while (sw.Elapsed.TotalSeconds < 5)
             {
-                cap.Read(frame);
+                int got = cap.Read(ref jpeg);
+                if (got <= 0) continue;
                 var t = Stopwatch.GetTimestamp();
-                Nv12.ZoomInto(frame, cap.Width, cap.Height, 1, outF);
+                try { tj.DecodeNv12(jpeg.AsSpan(0, got), eighths, ref frame); } catch { bad++; continue; }
+                Nv12.ZoomInto(frame!.Data, frame.W, frame.H, 1, outF);
                 vc.Send(outF.Data);
                 work += Stopwatch.GetTimestamp() - t;
                 n++;
             }
-            double got = n / sw.Elapsed.TotalSeconds, ms = work * 1000.0 / Stopwatch.Frequency / n;
-            bool ok = got >= fps * 0.93;
+            double rate = n / sw.Elapsed.TotalSeconds, ms = work * 1000.0 / Stopwatch.Frequency / Math.Max(1, n);
+            bool ok = rate >= fps * 0.93 && bad == 0;
             if (!ok) fails++;
-            lines.Add($"{(ok ? "PASS" : "FAIL")} send {send} at {fps} fps (camera {cap.Width}x{cap.Height}@{cap.Fps}): {got:0.0} fps, {ms:0.0} ms work per picture (budget {1000.0 / fps:0} ms)");
+            Flush();
+            lines.Add($"{(ok ? "PASS" : "FAIL")} send {send} at {fps} fps (camera {cap.Native}, decoded at {frame?.W}x{frame?.H}): " +
+                      $"{rate:0.0} fps, {ms:0.0} ms work per picture (budget {1000.0 / fps:0} ms){(bad > 0 ? $", {bad} bad pictures" : "")}");
         }
-
-        using (var cap = Capture.Open("EMEET PIXY", 1920, 1080, 30, out _))
-            if (cap != null && before.TryGetValue("Exposure", out var e))
-            {
-                PictureControls.Set(cap, "Exposure", e.value, e.auto);
-                PictureControls.SetRawCameraControl(cap, PictureControls.AutoExposurePriority, 1);
-            }
-
         lines.Add($"FAILURES: {fails}");
         File.WriteAllLines(outPath, lines);
         return fails;

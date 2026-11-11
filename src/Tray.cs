@@ -78,9 +78,13 @@ public sealed class Tray : IDisposable
             g.FillEllipse(fill, 21, 21, 9, 9);
         }
         var old = _icon.Icon;
-        _icon.Icon = Icon.FromHandle(bmp.GetHicon());
+        nint h = bmp.GetHicon();
+        using (var tmp = Icon.FromHandle(h)) _icon.Icon = (Icon)tmp.Clone();   // own copy, then free the raw handle
+        DestroyIcon(h);
         old?.Dispose();
     }
+
+    [System.Runtime.InteropServices.DllImport("user32")] static extern bool DestroyIcon(nint h);
 
     public void Dispose() { _icon.Visible = false; _icon.Dispose(); _logo.Dispose(); }
 

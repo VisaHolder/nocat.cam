@@ -39,7 +39,7 @@ public static class PictureControls
     public static Dictionary<string, Info> Read(Capture cap)
     {
         var d = new Dictionary<string, Info>();
-        var src = Marshal.GetObjectForIUnknown(cap.Source.NativePointer);
+        var src = cap.Filter;
         foreach (var (name, cam, id) in All)
         {
             try
@@ -62,7 +62,7 @@ public static class PictureControls
     public static bool Set(Capture cap, string name, int value, bool auto)
     {
         var (_, cam, id) = All.First(a => a.name == name);
-        var src = Marshal.GetObjectForIUnknown(cap.Source.NativePointer);
+        var src = cap.Filter;
         int flags = auto ? Auto : Manual;
         for (int attempt = 0; attempt < 10; attempt++)
         {
@@ -87,7 +87,7 @@ public static class PictureControls
     {
         try
         {
-            var i = (IAMCameraControl)Marshal.GetObjectForIUnknown(cap.Source.NativePointer);
+            var i = (IAMCameraControl)cap.Filter;
             if (i.GetRange(id, out var mn, out var mx, out _, out _, out _) != 0) return null;
             if (i.Get(id, out var v, out _) != 0) return null;
             return (mn, mx, v);
@@ -97,7 +97,7 @@ public static class PictureControls
 
     public static bool SetRawCameraControl(Capture cap, int id, int value)
     {
-        try { return ((IAMCameraControl)Marshal.GetObjectForIUnknown(cap.Source.NativePointer)).Set(id, value, Manual) == 0; }
+        try { return ((IAMCameraControl)cap.Filter).Set(id, value, Manual) == 0; }
         catch { return false; }
     }
 
