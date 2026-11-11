@@ -31,6 +31,28 @@ static class SwitchTest
             if (!ok) fails++;
             lines.Add($"{(ok ? "PASS" : "FAIL")} {size} at {fps} fps: sending {p.Fps:0.0} fps, camera {p.CaptureInfo}");
         }
+        // photo: switches to the biggest mode for a moment, saves, comes back
+        string? photo = null; var got = new ManualResetEventSlim();
+        p.OnSnapshot += path => { photo = path; got.Set(); };
+        cfg.vcam_size = "1920x1080"; cfg.fps = 60; Thread.Sleep(3000);
+        p.SnapshotRequested = true;
+        bool done = got.Wait(15000);
+        string dims = "";
+        if (photo != null) { using var im = Image.FromFile(photo); dims = $"{im.Width}x{im.Height}"; }
+        bool pOk = done && photo != null;
+        if (!pOk) fails++;
+        lines.Add($"{(pOk ? "PASS" : "FAIL")} photo: {photo ?? "none"} {dims}");
+        Thread.Sleep(3000);
+        bool back = p.Fps > 15 && p.CaptureInfo == "1920x1080";
+        if (!back) fails++;
+        lines.Add($"{(back ? "PASS" : "FAIL")} back to normal after the photo: sending {p.Fps:0.0} fps, camera {p.CaptureInfo}");
+        // be right back + low light: keeps sending
+        p.Brb = true; Thread.Sleep(3000);
+        bool brb = p.Fps > 15; if (!brb) fails++;
+        lines.Add($"{(brb ? "PASS" : "FAIL")} be right back card: sending {p.Fps:0.0} fps");
+        p.Brb = false; cfg.low_light = "strong"; Thread.Sleep(3000);
+        bool ll = p.Fps > 15; if (!ll) fails++;
+        lines.Add($"{(ll ? "PASS" : "FAIL")} low-light boost on: sending {p.Fps:0.0} fps");
         p.Stop();
         lines.Add($"FAILURES: {fails}");
         File.WriteAllLines(outPath, lines);

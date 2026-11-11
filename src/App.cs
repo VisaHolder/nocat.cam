@@ -21,9 +21,24 @@ public sealed class App : IDisposable
     public bool Asleep => CamAsleep || SoftAsleep;
     /// <summary>An app (Discord, OBS...) is showing nocat.cam right now.</summary>
     public bool InUse => Cfg.virtual_cam && Video.HasReaders;
+    public bool Brb => Video.Brb;
+    /// <summary>When you last changed the zoom yourself: auto framing waits a bit after that.</summary>
+    public double ManualZoomAt = -100;
     public void Say(string text) => Notify?.Invoke(text);
     /// <summary>nocat.cam is steering the camera to keep your whole body in frame (camera in manual).</summary>
-    public bool BodyTracking { get; private set; }
+    bool _bodyTracking;
+    /// <summary>nocat.cam's own tracking (Whole body / Only me). Remembered, so it comes back after a restart or update.</summary>
+    public bool BodyTracking
+    {
+        get => _bodyTracking;
+        private set
+        {
+            if (_bodyTracking == value) return;
+            _bodyTracking = value;
+            if (!value) Video.AutoZoom = 0;                       // back to your own zoom
+            if (Cfg.body_tracking != value) { Cfg.body_tracking = value; Cfg.Save(); }
+        }
+    }
     public bool TrackingOn => BodyTracking || Mode == Pixy.Tracking;
     int _modeBeforeSleep = Pixy.Manual;
     double _lastActivity = Now;
@@ -33,15 +48,26 @@ public sealed class App : IDisposable
     public event Action<string>? Notify;
 
     static readonly Stopwatch Clock = Stopwatch.StartNew();
-    static double Now => Clock.Elapsed.TotalSeconds;
+    public static double Now => Clock.Elapsed.TotalSeconds;
 
     public App()
     {
         Video = new Pipeline(() => Cfg, ShouldWatch, () => SoftAsleep, () => CamAsleep,
-            g => { _log.Info($"gesture {g} held"); Run(Cfg.gesture_actions.GetValueOrDefault(g, "none")); },
+            g =>
+            {
+                _log.Info($"gesture {g} held");
+                var act = Cfg.gesture_actions.GetValueOrDefault(g, "none");
+                if (act == "keys")
+                {
+                    var combo = Cfg.Locked(() => Cfg.gesture_keys.GetValueOrDefault(g, ""));
+                    if (!string.IsNullOrEmpty(combo)) { bool ok = KeyPress.Send(combo); _log.Info($"pressed {combo}{(ok ? "" : " (Windows refused)")}"); }
+                }
+                else Run(act);
+            },
             s => { _log.Info("status: " + s); Changed?.Invoke(); });
         Keys = new Hotkeys(a => Run(a));
         Video.CameraOpened += () => { if (Cfg.fixed_exposure) ApplyExposure(true); };
+        Video.OnSnapshot += path => { _log.Info("photo saved: " + (path ?? "failed")); Notify?.Invoke(path != null ? "Photo saved to Pictures\\nocat.cam" : "Couldn't take the photo"); };
         Video.OnLearnedOther += print =>
         {
             Cfg.Locked(() =>
@@ -76,6 +102,7 @@ public sealed class App : IDisposable
         new Thread(AutoLoop) { IsBackground = true, Name = "auto" }.Start();
         new Thread(BodyLoop) { IsBackground = true, Name = "body" }.Start();
         if (Cfg.fixed_exposure) ApplyExposure(true);
+        if (Cfg.body_tracking && Cfg.track_style is "body" or "me") Run("tracking", "was on before");
     }
 
     bool ShouldWatch()
@@ -180,6 +207,14 @@ public sealed class App : IDisposable
         {
             case "tracking": StartTracking(); break;
             case "manual": BodyTracking = false; Cam.SetMode(Pixy.Manual); break;
+            case "toggle_brb":
+                Video.Brb = !Video.Brb;
+                Notify?.Invoke(Video.Brb ? "Be right back is on" : "Be right back is off");
+                break;
+            case "snapshot":
+                if (Asleep || !Video.Streaming) { Notify?.Invoke("Wake the camera first to take a photo"); break; }
+                Video.SnapshotRequested = true;
+                break;
             case "remember_me":
                 if (!Cfg.virtual_cam) { Notify?.Invoke("Turn the nocat.cam virtual camera on first"); break; }
                 if (Asleep) { Notify?.Invoke("Wake the camera first"); break; }
@@ -188,6 +223,7 @@ public sealed class App : IDisposable
                 break;
             case "forget_me": Cfg.Locked(() => { Cfg.me_faces.Clear(); Cfg.not_me_faces.Clear(); }); Cfg.Save(); Notify?.Invoke("Forgot your face"); break;
             case "zoom_in" or "zoom_out" or "zoom_reset":
+                ManualZoomAt = Now;
                 c.zoom = action == "zoom_reset" ? 1 : Math.Round(Math.Clamp(c.zoom + (action == "zoom_in" ? c.zoom_step : -c.zoom_step), 1, 3), 2);
                 c.Save();
                 break;
@@ -218,21 +254,26 @@ public sealed class App : IDisposable
     void BodyLoop()
     {
         const double HFov = 70, VFov = 42;      // PIXY field of view (degrees, roughly) at zoom 1
-        const double DeadX = 0.08, DeadY = 0.07, Gain = 0.55, MaxStep = 12;
+        const double DeadX = 0.08, DeadY = 0.07;
         double lastMeasured = 0, movedAt = 0;
         while (!_quit)
         {
             Thread.Sleep(100);
             Video.WantBody = BodyTracking && !Asleep;
             Video.FaceLock = BodyTracking && Cfg.track_style == "me";      // no saved face yet = hold still
+            Video.AutoFrame = BodyTracking && Cfg.auto_frame;
+            int speed = Cfg.follow_speed;
+            double Gain = 0.25 + 0.06 * speed, MaxStep = 4 + 1.6 * speed, Settle = Math.Max(0.3, 0.5 - 0.03 * speed);   // 5 = the old feel
+            if (!Cfg.auto_frame) Video.AutoZoom = 0;
             if (!BodyTracking || Asleep) continue;
             var b = Video.Body;
             double now = Now;
             // only act on a fresh measurement taken after the camera finished its last move
-            if (b.at <= lastMeasured || now - b.at > 0.8 || b.at < movedAt + 0.35) continue;
+            if (b.at <= lastMeasured || now - b.at > 0.8 || b.at < movedAt + Settle) continue;
             lastMeasured = b.at;
             if (b.area < 0.03) continue;           // nobody there: hold still
-            double zoom = Math.Max(1, Cfg.zoom);
+            AutoFrame(b, now);
+            double zoom = Math.Max(1, Video.ZoomNow);
             double ex = b.cx - 0.5;
             double ey = b.top - 0.12;               // head just below the top edge
             double dPan = Math.Abs(ex) > DeadX ? Math.Clamp(-ex * HFov / zoom * Gain, -MaxStep, MaxStep) : 0;
@@ -248,6 +289,24 @@ public sealed class App : IDisposable
             }
             finally { Monitor.Exit(_doLock); }
         }
+    }
+
+    /// <summary>
+    /// Auto framing: zoom so your face stays about the same size when you lean back or come closer; with
+    /// two or more people (Whole body), zoom out until everyone fits. Waits 20 s after you zoom by hand.
+    /// </summary>
+    void AutoFrame(BodyInfo b, double now)
+    {
+        if (!Cfg.auto_frame || b.z <= 0) return;
+        if (now - ManualZoomAt < 20) { Video.AutoZoom = 0; return; }   // you just zoomed yourself
+        double want;
+        if (b.span > 0) want = b.z * 0.55 / b.span;            // faces spread over about half the width
+        else if (b.head > 0) want = b.z * 0.20 / b.head;      // face about a fifth of the picture's height
+        else return;
+        want = Math.Clamp(want, 1, 2.5);
+        double z = Video.AutoZoom > 0 ? Video.AutoZoom : Math.Max(1, Cfg.zoom);
+        if (Math.Abs(want - z) / z < 0.08) { if (Video.AutoZoom <= 0) Video.AutoZoom = z; return; }   // close enough: don't breathe
+        Video.AutoZoom = Math.Round(want, 3);                 // the picture eases there smoothly
     }
 
     void Nudge(string action)

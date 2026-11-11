@@ -38,6 +38,13 @@ Works with the PIXY 4K and the PIXY 2K. EMEET Studio isn't needed.
 - **Only me tracking**: nocat.cam steers the camera itself and follows only *your* face (press *This is me*
   a few times). Anyone walking behind you is ignored, and faces it sees next to yours are learned as "not me".
   Crouching or ducking doesn't lose you. *Whole body* follows anyone's full outline instead.
+- **Follow speed and auto framing**: choose how quickly tracking turns; auto framing zooms so your face stays the
+  same size when you lean back, and fits everyone in when someone sits next to you (Whole body).
+- **Gestures that press keys**: any sign can press a key combo, e.g. Discord mute or an OBS scene key.
+- **Be right back**: a sign, key or the tray swaps your picture for a BRB card (or your own picture); the camera keeps
+  watching so a sign turns it off again.
+- **Photo**: a sign, key or the tray saves a full 4K photo (cropped to your zoom) to *Pictures\nocat.cam*.
+- **Low-light boost**: brightens a dim room, calms the grain and brings the colour back (about 3 ms a picture).
 - **Positions**: nine slots that remember aim *and* zoom, with a smooth eased glide between them.
 - **Zoom**: crops the 4K picture, so it stays sharp up to about 2×.
 - **Background**: blur, or any picture, cut out around you. With your face saved, other people in view get

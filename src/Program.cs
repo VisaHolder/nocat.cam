@@ -7,6 +7,7 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        if (args.Length >= 2 && args[0] == "--boosttest") { Environment.Exit(BoostTest.Run(args[1])); return; }
         if (args.Length >= 1 && args[0] == "--install-vcam") { Environment.Exit(VcamDriver.InstallElevated()); return; }
         if (args.Length >= 1 && args[0] == "--uninstall-vcam") { Environment.Exit(VcamDriver.UninstallElevated()); return; }
         if (args.Length >= 3 && args[0] == "--cpubench") { Environment.Exit(CpuBench.Run(args[1], args[2])); return; }

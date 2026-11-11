@@ -138,6 +138,7 @@ public sealed class Bridge
                     ["asleep"] = _app.Asleep,
                     ["zoom"] = c.zoom,
                     ["faces"] = c.Locked(() => c.me_faces.Count),
+                    ["brb"] = _app.Brb,
                     ["others"] = c.Locked(() => c.not_me_faces.Count),
                     ["update"] = Updater.State,
                     ["face_found"] = v.FaceLock && !_app.Asleep && _app.TrackingOn ? v.FaceFound : (bool?)null,
@@ -149,6 +150,7 @@ public sealed class Bridge
             {
                 var key = S(a, 0);
                 if (key == "bg_mode" && S(a, 1) != "off") c.bg_last = S(a, 1);
+                if (key == "zoom") _app.ManualZoomAt = App.Now;
                 if (!c.Set(key, a[1]?.DeepClone())) return false;
                 c.Save();
                 if (key == "fixed_exposure") _app.ApplyExposure(c.fixed_exposure);
@@ -158,6 +160,16 @@ public sealed class Bridge
             case "set_gesture":
                 c.Locked(() => c.gesture_actions[S(a, 0)] = Actions.All.ContainsKey(S(a, 1)) ? S(a, 1) : "none");
                 c.Save(); return true;
+            case "set_gesture_keys":
+                if (S(a, 1) != "" && !Hotkeys.TryParse(S(a, 1), out _, out _)) return false;
+                c.Locked(() => c.gesture_keys[S(a, 0)] = S(a, 1));
+                c.Save(); return true;
+            case "pick_brb":
+            {
+                var p = _form.PickPicture();
+                if (p == null) return null;
+                c.brb_image = p; c.Save(); return p;
+            }
             case "set_gesture_hold":
             {
                 double v = a[1]?.GetValue<double>() ?? 0;

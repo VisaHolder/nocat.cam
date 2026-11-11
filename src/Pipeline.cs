@@ -46,6 +46,18 @@ public sealed class Pipeline
     public volatile bool WantBody;
     /// <summary>Follow only the face that matches the saved fingerprints ("only me").</summary>
     public volatile bool FaceLock;
+    /// <summary>Auto framing wants face sizes (and, for Whole body, everyone's faces).</summary>
+    public volatile bool AutoFrame;
+    /// <summary>Be right back: apps see the BRB card; the camera keeps watching so a gesture can end it.</summary>
+    public volatile bool Brb;
+    /// <summary>Take a full-quality photo with the next pictures (switches to the camera's biggest size for a moment).</summary>
+    public volatile bool SnapshotRequested;
+    public event Action<string?>? OnSnapshot;
+    readonly LowLight _boost = new();
+    /// <summary>Auto framing's zoom (0 = not in use: your own zoom applies). Never saved.</summary>
+    public double AutoZoom;
+    /// <summary>The zoom actually used right now (eases towards the wanted one).</summary>
+    public double ZoomNow { get; private set; } = 1;
     /// <summary>Set to ask the AI to save the face it sees now as "me"; the result arrives via OnRemembered.</summary>
     public volatile bool RememberRequested;
     public event Action<float[]?>? OnRemembered;
@@ -106,6 +118,8 @@ public sealed class Pipeline
         TurboJpeg? tj = null;
         int badPictures = 0;
         Nv12? outFrame = null;
+        int snapFrames = 0;
+        double snapAt = -1;
         double nextGesture = 0, nextMask = 0, nextPresence = 0, lastSend = 0, vcamFailedUntil = 0, retry = 3, perfLogAt = 0;
         int fpsN = 0; double fpsT = Now;
         long readTicks = 0, workTicks = 0;
@@ -158,6 +172,12 @@ public sealed class Pipeline
                 // ---- camera: only while something needs pictures from it
                 // Without the virtual camera we never hold the PIXY: Discord/OBS use it directly then.
                 bool needCamera = !camAsleep && vcam != null;
+                if (SnapshotRequested && snapAt < 0) snapAt = Now;   // the photo's clock starts now
+                if (SnapshotRequested && (!needCamera || Now - snapAt > 10))
+                {
+                    SnapshotRequested = false; snapFrames = 0; OnSnapshot?.Invoke(null);
+                }
+                if (!SnapshotRequested) snapAt = -1;
                 if (!needCamera)
                 {
                     if (cap != null) { CloseCap(); log.Info(camAsleep ? "camera released while asleep" : "camera released"); }
@@ -176,13 +196,15 @@ public sealed class Pipeline
                 // light (its 4K mode drops to 20 in dim light, which looked choppy). 1440p/4K out: the 4K mode.
                 bool small = c.vcam_size is "1920x1080" or "1280x720";
                 var ck = small ? "1920x1080@" + (c.fps == 60 ? 60 : 30) : c.capture_size + "@30";
+                if (SnapshotRequested) ck = (Capture.LastSizes.FirstOrDefault() ?? "3840x2160") + "@30";
                 if (capKey != ck)
                 {
                     CloseCap();
                     var (cw, chh) = Size(ck.Split('@')[0]);
-                    cap = Capture.Open("EMEET PIXY", cw, chh, c.fps, out var err);
+                    cap = Capture.Open("EMEET PIXY", cw, chh, int.Parse(ck.Split('@')[1]), out var err);   // the key's frame rate (a photo asks 4K at 30)
                     if (cap == null)
                     {
+                        if (SnapshotRequested) { SnapshotRequested = false; snapFrames = 0; OnSnapshot?.Invoke(null); continue; }   // couldn't switch: give up the photo, not the camera
                         SetStatus(err ?? "camera in use by another app");
                         if (vcam != null) SendCard(vcam, "card_idle.png");
                         _stopEvent.WaitOne((int)(retry * 1000));
@@ -191,6 +213,7 @@ public sealed class Pipeline
                     }
                     retry = 3;
                     capKey = ck;
+                    snapFrames = 0;                       // count pictures from this mode only
                     Camera = cap;
                     tj ??= new TurboJpeg();
                     CaptureInfo = $"{cap.Width}x{cap.Height}";
@@ -202,19 +225,38 @@ public sealed class Pipeline
 
                 // ---- what does this picture need to be used for?
                 now = Now;
-                double zoom = Math.Clamp(c.zoom, 1, 3);
+                double wantZoom = Math.Clamp(AutoZoom > 0 ? AutoZoom : c.zoom, 1, 3);
+                double zoom = ZoomNow = Math.Abs(wantZoom - ZoomNow) < 0.004 ? wantZoom : ZoomNow + (wantZoom - ZoomNow) * 0.2;
                 bool send = vcam != null && (HasReaders || now - lastSend >= IdleSendEvery);
                 string bg = vcam != null && !soft ? c.bg_mode : "off";
                 bool gestureDue = detect && now >= nextGesture;
                 bool presenceDue = (c.auto_sleep_away_min > 0 || WantBody || RememberRequested) && now >= nextPresence;
                 bool maskDue = send && bg != "off" && now >= nextMask;    // blur/picture: a fresh outline 15 times a second is plenty
                 bool handAi = !_ai.Busy && (gestureDue || presenceDue || maskDue);
-                bool needPicture = (send && !soft) || handAi;
+                bool needPicture = (send && !soft && !Brb) || handAi || SnapshotRequested;
 
                 var t0 = Stopwatch.GetTimestamp();
                 int got = cap!.Read(ref jpeg, needPicture);
                 readTicks += Stopwatch.GetTimestamp() - t0;
                 if (got < 0) { CloseCap(); log.Info("camera stopped sending - reopening"); _stopEvent.WaitOne(1000); continue; }
+                if (got > 0 && SnapshotRequested && capKey == ck && ++snapFrames >= 10)
+                {
+                    // 10 pictures in: the camera has settled its exposure after switching
+                    SnapshotRequested = false; snapFrames = 0;
+                    var copy = jpeg.AsSpan(0, got).ToArray();
+                    double zz = Math.Clamp(c.zoom, 1, 3);
+                    ThreadPool.QueueUserWorkItem(_ => OnSnapshot?.Invoke(SavePhoto(copy, zz)));
+                }
+                if (got > 0 && send && Brb && !soft)
+                {
+                    // be right back: the card goes out every picture; the camera picture is only decoded if the AI wants it
+                    var card = (string.IsNullOrEmpty(c.brb_image) ? null : Picture(c.brb_image, vcam!.Width, vcam.Height))
+                               ?? Picture(Path.Combine(_here, "assets", "card_brb.png"), vcam!.Width, vcam.Height)
+                               ?? Picture(Path.Combine(_here, "assets", "card_idle.png"), vcam.Width, vcam.Height);
+                    if (card != null) vcam!.Send(card.Data);
+                    lastSend = now; fpsN++;
+                    send = false;                         // done for this picture
+                }
                 if (got == 0 || !needPicture) continue;
                 t0 = Stopwatch.GetTimestamp();
 
@@ -243,6 +285,7 @@ public sealed class Pipeline
                     else
                     {
                         Nv12.ZoomInto(frame!.Data, frame.W, frame.H, zoom, outFrame!);
+                        if (c.low_light != "off") _boost.Apply(outFrame!, c.low_light);
                         var m = _ai.Mask;
                         if (bg != "off" && m.mask != null)
                         {
@@ -329,6 +372,8 @@ public sealed class Pipeline
         public void ClearGesture() { _held = null; }
 
         (double cx, double cy, double top, double bottom)? _me;
+        List<(double cx, double top, double w, double h)> _allFaces = new();
+        double _allFacesAt = -10, _allFacesZ = 1, _meH, _meHAt = -10, _meHZ = 1;
         (double x, double y)? _track;                 // where your head is, carried by your outline between face checks
         double _trackAt = -10;
         double _meAt = -10, _meChecked = -10, _faceRetryAt, _scoreLogAt, _learnAt = -10;
@@ -351,6 +396,8 @@ public sealed class Pipeline
             try { faces = _faces.Faces(rgb, rw, rh); }
             catch { if (remember) _p.OnRemembered?.Invoke(null); throw; }
             if (faces.Count > 0) _p.LastPerson = now;
+            _allFaces = faces.Select(f => ((f.X + f.W / 2.0) / rw, (double)f.Y / rh, (double)f.W / rw, (double)f.H / rh)).ToList();
+            _allFacesAt = now; _allFacesZ = _zoom;
 
             if (remember)
             {
@@ -407,6 +454,7 @@ public sealed class Pipeline
             {
                 _lastFace = ((b.X + b.W / 2.0) / rw, (b.Y + b.H / 2.0) / rh);
                 _me = (_lastFace.cx, _lastFace.cy, Math.Max(0, (b.Y - b.H * 0.6) / rh), Math.Min(1, (b.Y + b.H * 3.0) / rh));
+                _meH = (double)b.H / rh; _meHAt = now; _meHZ = _zoom;
                 _meAt = now;
             }
             else _me = null;
@@ -476,7 +524,7 @@ public sealed class Pipeline
         {
             if (_me is { } f)
             {
-                _p.Body = (f.cx, f.top, f.bottom, 0.1, now); _p.FaceFound = true;
+                _p.Body = new BodyInfo(f.cx, f.top, f.bottom, 0.1, now, _meH, 0, _meHZ); _p.FaceFound = true;
                 _track = (f.cx, f.cy); _trackAt = now;
                 return;
             }
@@ -498,12 +546,36 @@ public sealed class Pipeline
                             if (lab[y * mw + x] == id) { hx += x; hn++; }
                     double cx = hn > 0 ? (hx / (double)hn + 0.5) / mw : t.x;
                     double tp = (double)top / mh, bt = (bottom + 1.0) / mh;
-                    _p.Body = (cx, tp, bt, (double)n / (mw * mh), now); _p.FaceFound = true;
+                    _p.Body = new BodyInfo(cx, tp, bt, (double)n / (mw * mh), now, now - _meHAt < 2 ? _meH : 0, 0, _meHZ); _p.FaceFound = true;
                     _track = (cx, Math.Min(1, tp + headRows * 0.5 / mh + 0.04)); _trackAt = now;
                     return;
                 }
             }
-            _p.Body = (0.5, 0, 1, 0, now); _p.FaceFound = false;        // lost you: hold still
+            // Lost you. If the face finder sees no face at all (only the top of your head is in view, you're
+            // turned away) and there's exactly one person in the picture, that's you: follow them until your
+            // face shows again. Someone else's face in view = hold still.
+            if (m != null && now - _allFacesAt < 1 && _allFaces.Count == 0 && now - _meAt < 600)
+            {
+                var (lab, sizes) = Label(m, mw, mh);
+                if (sizes.Count == 2 && sizes[1] > mw * mh / 50)
+                {
+                    int top = mh, bottom = -1;
+                    long hx = 0; int hn = 0;
+                    for (int y = 0; y < mh; y++)
+                        for (int x = 0; x < mw; x++)
+                            if (lab[y * mw + x] == 1) { if (y < top) top = y; bottom = y; }
+                    int headRows = Math.Max(2, (bottom - top) / 8);
+                    for (int y = top; y <= Math.Min(bottom, top + headRows); y++)
+                        for (int x = 0; x < mw; x++)
+                            if (lab[y * mw + x] == 1) { hx += x; hn++; }
+                    double cx = hn > 0 ? (hx / (double)hn + 0.5) / mw : 0.5;
+                    double tp = (double)top / mh, bt = (bottom + 1.0) / mh;
+                    _p.Body = new BodyInfo(cx, tp, bt, (double)sizes[1] / (mw * mh), now); _p.FaceFound = true;
+                    _track = (cx, Math.Min(1, tp + headRows * 0.5 / mh + 0.04)); _trackAt = now;
+                    return;
+                }
+            }
+            _p.Body = (0.5, 0, 1, 0, now); _p.FaceFound = false;        // hold still
         }
 
         /// <summary>
@@ -524,6 +596,21 @@ public sealed class Pipeline
             return nearest.me;
         }
 
+        /// <summary>
+        /// Whole body: the person outline, plus face sizes for auto framing. With two or more faces in view,
+        /// aim at the middle of the group and report how wide it is, so auto framing can fit everyone.
+        /// </summary>
+        BodyInfo Everyone((double cx, double top, double bottom, double area) box, double now)
+        {
+            var faces = now - _allFacesAt < 1 ? _allFaces : new();
+            if (!_p.AutoFrame || faces.Count == 0) return new BodyInfo(box.cx, box.top, box.bottom, box.area, now, 0, 0, 0);
+            double head = faces.Max(f => f.h);
+            if (faces.Count == 1) return new BodyInfo(box.cx, box.top, box.bottom, box.area, now, head, 0, _allFacesZ);
+            double l = faces.Min(f => f.cx - f.w / 2), r = faces.Max(f => f.cx + f.w / 2);
+            double top = Math.Max(0, faces.Min(f => f.top) - head * 0.6);
+            return new BodyInfo((l + r) / 2, top, box.bottom, Math.Max(box.area, 0.05), now, head, r - l, _allFacesZ);
+        }
+
         void Run()
         {
             string here = AppContext.BaseDirectory;
@@ -540,7 +627,8 @@ public sealed class Pipeline
                     var c = _cfg!;
                     bool lockOn = _presence && _p.FaceLock;
                     bool onlyMe = _mask && c.bg_only_me && c.bg_mode != "off" && c.Locked(() => c.me_faces.Count) > 0;
-                    if ((lockOn || _p.RememberRequested || (onlyMe && now - _meChecked > 0.15)) && now >= _faceRetryAt)
+                    bool frameFaces = _presence && _p.AutoFrame && !_p.FaceLock && now - _meChecked > 0.35;
+                    if ((lockOn || _p.RememberRequested || frameFaces || (onlyMe && now - _meChecked > 0.15)) && now >= _faceRetryAt)
                     {
                         try { FindMe(c, now); }
                         catch (Exception e)
@@ -564,7 +652,7 @@ public sealed class Pipeline
                         {
                             var box = PersonBox(m, mw, mh);
                             if (box.area > 0.03) _p.LastPerson = now;
-                            if (!_p.FaceLock) _p.Body = (box.cx, box.top, box.bottom, box.area, now);
+                            if (!_p.FaceLock) _p.Body = Everyone(box, now);
                         }
                     }
                     if (_gesture)
@@ -611,6 +699,31 @@ public sealed class Pipeline
     }
 
     internal static float[] KeepOneForTest(float[] m, int w, int h, (double x, double y)? seed) => Ai.KeepOne(m, w, h, seed);
+
+    /// <summary>
+    /// Save a camera picture (straight from the camera, full size) as a photo, cropped to the zoom you're
+    /// using, into Pictures\nocat.cam. Returns the file, or null.
+    /// </summary>
+    static string? SavePhoto(byte[] jpeg, double zoom)
+    {
+        try
+        {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "nocat.cam");
+            Directory.CreateDirectory(dir);
+            var file = Path.Combine(dir, $"nocat.cam {DateTime.Now:yyyy-MM-dd HH-mm-ss}.jpg");
+            for (int i = 2; File.Exists(file); i++) file = Path.Combine(dir, $"nocat.cam {DateTime.Now:yyyy-MM-dd HH-mm-ss} ({i}).jpg");
+            using var ms = new MemoryStream(jpeg);
+            using var img = new Bitmap(ms);
+            int cw = (int)(img.Width / zoom), ch = (int)(img.Height / zoom);
+            using var crop = img.Clone(new Rectangle((img.Width - cw) / 2, (img.Height - ch) / 2, cw, ch), img.PixelFormat);
+            var codec = ImageCodecInfo.GetImageEncoders().First(e => e.MimeType == "image/jpeg");
+            using var ep = new EncoderParameters(1);
+            ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 95L);
+            crop.Save(file, codec, ep);
+            return file;
+        }
+        catch (Exception e) { Log.Instance.Info("photo failed: " + e.Message); return null; }
+    }
 
     /// <summary>Load a picture without keeping the file locked (so it can be moved or edited).</summary>
     public static Bitmap LoadBitmap(string path)
@@ -679,7 +792,9 @@ public sealed class Pipeline
 }
 
 /// <summary>Where the person is (fractions 0..1): centre x, top y, bottom y, share of picture, and when it was measured.</summary>
-public sealed record BodyInfo(double cx, double top, double bottom, double area, double at)
+public sealed record BodyInfo(double cx, double top, double bottom, double area, double at,
+                              double head = 0, double span = 0, double z = 0)
 {
+    // head = face height (share of the picture), span = width of a group of faces, z = zoom it was measured at
     public static implicit operator BodyInfo((double cx, double top, double bottom, double area, double at) t) => new(t.cx, t.top, t.bottom, t.area, t.at);
 }

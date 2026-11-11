@@ -8,7 +8,7 @@ public sealed class Tray : IDisposable
 {
     readonly App _app;
     readonly NotifyIcon _icon;
-    readonly ToolStripMenuItem _track, _sleep, _bg, _gest, _vcam;
+    readonly ToolStripMenuItem _track, _sleep, _bg, _brb, _gest, _vcam;
     readonly Bitmap _logo;
     readonly Control _ui;
     string _lastLevel = "";
@@ -25,6 +25,8 @@ public sealed class Tray : IDisposable
         _track = Item(menu, "Tracking", () => _app.Run("toggle_tracking"));
         _sleep = Item(menu, "Asleep", () => _app.Run("toggle_sleep"));
         _bg = Item(menu, "Background effect", () => _app.Run("toggle_bg"));
+        _brb = Item(menu, "Be right back", () => _app.Run("toggle_brb"));
+        menu.Items.Add(new ToolStripMenuItem("Take a photo", null, (_, _) => _app.Run("snapshot")));
         menu.Items.Add(new ToolStripSeparator());
         _gest = Item(menu, "Gestures on", () => { _app.Cfg.gestures_enabled = !_app.Cfg.gestures_enabled; _app.Cfg.Save(); Refresh(); });
         _vcam = Item(menu, "Virtual camera", () => { _app.Cfg.virtual_cam = !_app.Cfg.virtual_cam; _app.Cfg.Save(); Refresh(); });
@@ -51,6 +53,7 @@ public sealed class Tray : IDisposable
         _track.Checked = _app.TrackingOn;
         _sleep.Checked = _app.Asleep;
         _bg.Checked = _app.Cfg.bg_mode != "off";
+        _brb.Checked = _app.Brb;
         _gest.Checked = _app.Cfg.gestures_enabled;
         _vcam.Checked = _app.Cfg.virtual_cam;
         var (level, text) = _app.Status();

@@ -29,6 +29,9 @@ public static class Actions
             ["zoom_reset"] = "Zoom reset",
             ["toggle_bg"] = "Background effect on / off",
             ["remember_me"] = "Remember my face (for Only me)",
+            ["toggle_brb"] = "Be right back on / off",
+            ["snapshot"] = "Take a photo",
+            ["keys"] = "Press keys…",
         };
         for (int i = 1; i <= 9; i++) d[$"goto_{i}"] = $"Go to position {i}";
         return d;
@@ -38,7 +41,7 @@ public static class Actions
     {
         var d = new Dictionary<string, string>();
         foreach (var (k, v) in Build())
-            if (k is not ("none" or "sleep" or "wake" or "tracking" or "manual")) d[k] = v;
+            if (k is not ("none" or "sleep" or "wake" or "tracking" or "manual" or "keys")) d[k] = v;
         for (int i = 1; i <= 9; i++) d[$"save_{i}"] = $"Save position {i}";
         return d;
     }

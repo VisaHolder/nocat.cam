@@ -160,6 +160,9 @@
         <div class="seg" data-key="track_style"><button data-v="camera">Face</button><button data-v="body">Whole body</button><button data-v="me">Only me</button></div></div>
       <div class="row" id="merow"><div class="lbl">Your face<small id="mehelp"></small></div>
         <div><button class="btn sm pri" data-a="remember_me">This is me</button> <button class="btn ghost sm" data-a="forget_me">Forget</button></div></div>
+      <div class="row"><div class="lbl">Follow speed<small>How quickly nocat.cam's tracking (Whole body, Only me) turns to follow you.</small></div><div class="sl"><input type="range" min="1" max="10" step="1" data-key="follow_speed"><span class="val"></span></div></div>
+      <div class="row"><div class="lbl">Auto framing<small>With Whole body or Only me: zooms so your face stays the same size when you lean back or come closer. Whole body also fits everyone in when someone sits with you.</small></div><label class="tg"><input type="checkbox" data-key="auto_frame"><span></span></label></div>
+      <div class="row"><div class="lbl">Be right back<small>Apps see a "be right back" card; the camera keeps watching, so a gesture can turn it off.</small></div><label class="tg"><input type="checkbox" id="q-brb"><span></span></label></div>
       <div class="row"><div class="lbl">Asleep<small>Privacy or soft sleep, as set on the Sleep page.</small></div>
         <label class="tg"><input type="checkbox" id="q-sleep"><span></span></label></div>
       <div class="row"><div class="lbl">Background</div>
@@ -225,9 +228,15 @@
     <h2>Background</h2>
     <div class="card">
       <div class="row"><div class="lbl">Effect</div><div class="seg" data-key="bg_mode"><button data-v="off">Off</button><button data-v="blur">Blur</button><button data-v="image">Picture</button></div></div>
+      <div class="row"><div class="lbl">Be right back picture<small id="brbname">nocat card</small></div><button class="btn" id="pickbrb">Choose…</button><button class="btn ghost sm" id="clearbrb">Use nocat card</button></div>
       <div class="row"><div class="lbl">Blur people behind me<small>Uses your saved face (Camera page, Only me, This is me): anyone else in view gets blurred too. Someone touching or overlapping you stays clear.</small></div><label class="tg"><input type="checkbox" data-key="bg_only_me"><span></span></label></div>
       <div class="row"><div class="lbl">Blur strength</div><div class="sl"><input type="range" min="1" max="10" step="1" data-key="bg_blur"><span class="val"></span></div></div>
       <div class="row"><div class="lbl">Picture<small id="bgname">nocat card</small></div><button class="btn" id="pickbg">Choose…</button><button class="btn ghost sm" id="clearbg">Use nocat card</button></div>
+    </div>
+    <h2>Low light</h2>
+    <div class="card">
+      <div class="row"><div class="lbl">Low-light boost<small>Brightens a dim room, calms the grain and brings the colour back. Auto steps in when the room is dim; Strong always brightens.</small></div>
+        <div class="seg" data-key="low_light"><button data-v="off">Off</button><button data-v="auto">Auto</button><button data-v="strong">Strong</button></div></div>
     </div>
     <h2>Smoothness</h2>
     <div class="card">
@@ -344,6 +353,9 @@ function bind() {
   $$("[data-a]").forEach(b => b.onclick = () => api().action(b.dataset.a));
   $("#q-track").onchange = () => api().action("toggle_tracking");
   $("#q-sleep").onchange = () => api().action("toggle_sleep");
+  $("#q-brb").onchange = () => api().action("toggle_brb");
+  $("#pickbrb").onclick = async () => { const p = await api().pick_brb(); if (p) { S.cfg.brb_image = p; syncAll(); } };
+  $("#clearbrb").onclick = () => set("brb_image", "");
   $("#github").onclick = () => api().open_github();
   const vcamText = { nocat: 'Installed. Apps list it as "nocat.cam".', obs: "Using OBS Studio's copy (installed with OBS). Nothing else needed.",
     missing: 'Not installed yet: press Install once (Windows asks for admin). Then pick "nocat.cam" in Discord.', broken: "Its files are gone: press Install to put it back." };
@@ -390,6 +402,7 @@ function syncAll() {
     : c.fps === 60 ? "60 fps uses the camera's own 1080p mode. It needs a bright room: in dim light the camera slows itself to 20-30 fps."
     : "1080p and 720p can also do 60 fps.";
   $("#bgname").textContent = c.bg_image ? c.bg_image.split(/[\\/]/).pop() : "nocat card";
+  $("#brbname").textContent = c.brb_image ? c.brb_image.split(/[\\/]/).pop() : "nocat card";
   $("#merow").style.display = c.track_style === "me" ? "" : "none";
   // PIXY 2K: hide sizes the camera can't do
   if (S.camera_sizes && S.camera_sizes.length) {
@@ -414,9 +427,15 @@ function renderGestures() {
   $("#glist").innerHTML = Object.entries(S.gestures).map(([g, label]) => `
     <div class="row"><div class="lbl">${label}</div>
       <select data-g="${g}">${opts}</select>
+      <span class="key gkey ${(S.cfg.gesture_keys || {})[g] ? "" : "empty"}" data-gk="${g}" title="Click, then press the keys this sign should press">${pretty((S.cfg.gesture_keys || {})[g])}</span>
       <div class="hold" title="Hold time for this sign (empty = default)"><input class="num" type="number" min="0" max="10" step="0.1" placeholder="auto" data-gh="${g}">sec</div>
     </div>`).join("");
-  $$("[data-g]").forEach(s => { s.value = S.cfg.gesture_actions[s.dataset.g] || "none"; s.onchange = () => api().set_gesture(s.dataset.g, s.value); });
+  const showKeys = () => $$("[data-gk]").forEach(k => k.style.display = S.cfg.gesture_actions[k.dataset.gk] === "keys" ? "" : "none");
+  $$("[data-g]").forEach(s => { s.value = S.cfg.gesture_actions[s.dataset.g] || "none";
+    s.onchange = () => { S.cfg.gesture_actions[s.dataset.g] = s.value; api().set_gesture(s.dataset.g, s.value); showKeys();
+      if (s.value === "keys" && !(S.cfg.gesture_keys || {})[s.dataset.g]) recordGestureKeys($(`[data-gk="${s.dataset.g}"]`)); }; });
+  $$("[data-gk]").forEach(k => k.onclick = () => recordGestureKeys(k));
+  showKeys();
   $$("[data-gh]").forEach(i => { const v = (S.cfg.gesture_hold || {})[i.dataset.gh]; i.value = v || "";
     i.onchange = () => api().set_gesture_hold(i.dataset.gh, i.value === "" ? 0 : Number(i.value)); });
 }
@@ -435,12 +454,21 @@ function renderKeys() {
 const KEYNAMES = { " ": "space", "ArrowLeft": "left", "ArrowRight": "right", "ArrowUp": "up", "ArrowDown": "down",
   "Escape": "esc", "Enter": "enter", "Tab": "tab", "PageUp": "pageup", "PageDown": "pagedown", "Home": "home", "End": "end",
   "Insert": "insert", "Delete": "delete", "Pause": "pause", "ScrollLock": "scrolllock" };
-async function recordKey(el) {
-  if (recording) return;
+async function recordGestureKeys(el) {
+  if (recording || !el) return;
   recording = el; el.classList.add("rec"); el.textContent = "Press keys…";
-  const a = el.dataset.k;
-  await api().pause_hotkeys();            // so pressing e.g. Alt+1 here doesn't also move the camera
-  const combo = await new Promise(resolve => {
+  await api().pause_hotkeys();
+  const combo = await readCombo();
+  recording = null;
+  await api().resume_hotkeys();
+  if (combo !== null) {
+    if (await api().set_gesture_keys(el.dataset.gk, combo)) { S.cfg.gesture_keys = S.cfg.gesture_keys || {}; S.cfg.gesture_keys[el.dataset.gk] = combo; }
+    else toast(pretty(combo) + " can't be pressed by nocat.cam - try another key");
+  }
+  renderGestures();
+}
+function readCombo() {
+  return new Promise(resolve => {
     const done = v => { document.removeEventListener("keydown", onKey, true); clearTimeout(t); resolve(v); };
     const t = setTimeout(() => done(null), 10000);
     function onKey(e) {
@@ -457,6 +485,13 @@ async function recordKey(el) {
     }
     document.addEventListener("keydown", onKey, true);
   });
+}
+async function recordKey(el) {
+  if (recording) return;
+  recording = el; el.classList.add("rec"); el.textContent = "Press keys…";
+  const a = el.dataset.k;
+  await api().pause_hotkeys();            // so pressing e.g. Alt+1 here doesn't also move the camera
+  const combo = await readCombo();
   recording = null;
   if (combo === null) { await api().resume_hotkeys(); renderKeys(); return; }
   const ok = await api().set_hotkey(a, combo);
@@ -517,6 +552,7 @@ async function poll() {
     $("#stext").textContent = st.text;
     $("#q-track").checked = st.tracking;
     $("#q-sleep").checked = st.asleep;
+    $("#q-brb").checked = !!st.brb;
     if (st.update) $("#updhelp").textContent = st.update.startsWith("failed") ? "Update " + st.update : st.update[0].toUpperCase() + st.update.slice(1) + "...";
     $("#mehelp").textContent = !st.faces ? "Look at the camera and press This is me (do it 3-4 times: straight, a bit left, a bit right)."
       : `${st.faces} look${st.faces > 1 ? "s" : ""} saved` + (st.others ? `, ${st.others} other face${st.others > 1 ? "s" : ""} learned` : "") + (st.face_found === true ? " · following you" : st.face_found === false ? " · can't see you, holding still" : "");

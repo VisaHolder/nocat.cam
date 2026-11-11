@@ -31,6 +31,12 @@ public sealed class Config
     // saved looks, other people about 0.2. Not saved in the config, so a better value always applies.
     [System.Text.Json.Serialization.JsonIgnore] public double face_match => 0.5;
     public bool bg_only_me { get; set; } = true;
+    public Dictionary<string, string> gesture_keys { get; set; } = new();   // gesture -> key combo it presses
+    public string brb_image { get; set; } = "";               // be-right-back picture ("" = nocat card)
+    public int follow_speed { get; set; } = 5;                // 1 calm .. 10 quick
+    public bool auto_frame { get; set; } = true;
+    public bool body_tracking { get; set; }                   // nocat.cam's tracking was on (restored at start)              // zoom so your face stays the same size (nocat.cam tracking)
+    public string low_light { get; set; } = "auto";           // off | auto | strong
     public bool gestures_only_me { get; set; } = true;      // with a saved face: only your hands count            // with a saved face: blur everyone except you
     public bool auto_update { get; set; } = true;           // install new versions from GitHub (only while no app is using nocat.cam)           // how alike a face must be to count as you
     public string wake_to { get; set; } = "stay";
@@ -84,6 +90,8 @@ public sealed class Config
         hold_s = Math.Clamp(hold_s, 0.3, 10);
         min_score = Math.Clamp(min_score, 0.3, 0.95);
         bg_blur = Math.Clamp(bg_blur, 1, 10);
+        follow_speed = Math.Clamp(follow_speed, 1, 10);
+        if (low_light is not ("off" or "auto" or "strong")) low_light = "auto";
         if (track_style is not ("camera" or "body" or "me")) track_style = "camera";
         if (fps != 30 && fps != 60) fps = 60;
         if (vcam_size is "3840x2160" or "2560x1440") fps = 30;               // the camera does 60 only up to 1080p
