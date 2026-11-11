@@ -23,6 +23,7 @@ public sealed class Config
     public int bg_blur { get; set; } = 6;
     public string bg_image { get; set; } = "";
     public string sleep_style { get; set; } = "privacy";  // privacy | soft
+    public string unused_sleep_style { get; set; } = "privacy";  // when no app uses nocat.cam: privacy (camera turns down) | soft
     public string track_style { get; set; } = "camera";   // camera = PIXY's own | body = anyone's whole body | me = only your saved face
     public List<float[]> me_faces { get; set; } = new();     // fingerprints of your face for "only me"
     public List<float[]> not_me_faces { get; set; } = new(); // other people's faces, learned when seen next to you

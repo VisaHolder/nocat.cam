@@ -140,10 +140,17 @@ public sealed class App : IDisposable
 
         if (action == "sleep")
         {
+            // nobody using nocat.cam: a soft sleep goes all the way down (camera turns away, light off)
+            if (why == "unused" && c.unused_sleep_style == "privacy" && SoftAsleep && !CamAsleep)
+            {
+                if (Cam.SetMode(Pixy.Sleep)) { CamAsleep = true; SoftAsleep = false; AutoSlept = why; }
+                return;
+            }
             if (Asleep) return;
             var m = Cam.GetMode();
             _modeBeforeSleep = m is Pixy.Manual or Pixy.Tracking ? m.Value : Pixy.Manual;
-            if (c.sleep_style == "soft" || why == "away") SoftAsleep = true;   // away: stay soft to see you come back
+            string style = why == "unused" ? c.unused_sleep_style : c.sleep_style;
+            if (style == "soft" || why == "away") SoftAsleep = true;   // away: stay soft to see you come back
             else if (Cam.SetMode(Pixy.Sleep)) CamAsleep = true;
             AutoSlept = why;
             return;
@@ -347,11 +354,15 @@ public sealed class App : IDisposable
                 // dark camera and grabs it again, which used to look like "an app started using it".
                 if (Asleep && atSleep == null) atSleep = seen.Where(kv => now - kv.Value < 30).Select(kv => kv.Key).ToHashSet();
                 if (!Asleep) atSleep = null;
+                // an app that has been gone for a minute counts as new when it comes back (left the call, rejoined)
+                atSleep?.RemoveWhere(u => !seen.TryGetValue(u, out var t) || now - t > 60);
                 if (users != null && atSleep != null) startedUsing = users.Any(u => !atSleep.Contains(u));
 
                 if (AutoSlept == "away" && now - Video.LastPerson < 6) { Do("wake", "you're back"); continue; }
                 if (Asleep && startedUsing && (AutoSlept == "unused" || c.auto_wake_on_use))
                 { Do("wake", "an app started using nocat.cam"); continue; }
+                bool unused = c.auto_sleep_unused_min > 0 && users != null && now - Math.Max(unusedSince, Math.Max(_lastActivity, Video.OpenedAt)) > c.auto_sleep_unused_min * 60;
+                if (unused && SoftAsleep && !CamAsleep && c.unused_sleep_style == "privacy") { Do("sleep", "unused"); continue; }
                 if (Asleep) continue;
 
                 // timers count from the latest of: last seen / last used, your last action, camera (re)opened

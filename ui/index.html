@@ -249,6 +249,8 @@
     <h2>Automatic</h2>
     <div class="card">
       <div class="row"><div class="lbl">Sleep when nobody is in view<small>Wakes by itself when you're back.</small></div><div class="sl"><input type="range" min="0" max="60" step="1" data-key="auto_sleep_away_min"><span class="val" data-fmt="min"></span></div></div>
+      <div class="row"><div class="lbl">When no app uses nocat.cam<small>Privacy = the camera turns down and its light goes off (also from a soft sleep); it comes back up when an app starts using nocat.cam.</small></div>
+        <div class="seg" data-key="unused_sleep_style"><button data-v="privacy">Privacy</button><button data-v="soft">Soft</button></div></div>
       <div class="row"><div class="lbl">Sleep when no app uses nocat.cam</div><div class="sl"><input type="range" min="0" max="60" step="1" data-key="auto_sleep_unused_min"><span class="val" data-fmt="min"></span></div></div>
       <div class="row"><div class="lbl">Wake when an app starts using nocat.cam</div><label class="tg"><input type="checkbox" data-key="auto_wake_on_use"><span></span></label></div>
     </div>
