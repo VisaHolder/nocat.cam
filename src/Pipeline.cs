@@ -329,6 +329,8 @@ public sealed class Pipeline
         public void ClearGesture() { _held = null; }
 
         (double cx, double cy, double top, double bottom)? _me;
+        (double x, double y)? _track;                 // where your head is, carried by your outline between face checks
+        double _trackAt = -10;
         double _meAt = -10, _meChecked = -10, _faceRetryAt, _scoreLogAt, _learnAt = -10;
         List<(double cx, double cy, double w, bool me)> _seenFaces = new();
 
@@ -410,18 +412,23 @@ public sealed class Pipeline
             else _me = null;
         }
 
-        /// <summary>Face lock: follow your face; nobody matching = hold still (never swing to someone else).</summary>
-        void FollowMe(double now)
-        {
-            if (_me is { } m) { _p.Body = (m.cx, m.top, m.bottom, 0.1, now); _p.FaceFound = true; }
-            else { _p.Body = (0.5, 0, 1, 0, now); _p.FaceFound = false; }
-        }
-
         /// <summary>
         /// Keep only one person in the background mask: the outline your face is in (or, if your face
         /// hasn't been seen for a few seconds, the biggest outline). Everyone else gets blurred too.
         /// </summary>
         internal static float[] KeepOne(float[] m, int w, int h, (double x, double y)? seed)
+        {
+            var (lab, sizes) = Label(m, w, h);
+            if (sizes.Count <= 2) return m;                     // one person (or nobody): nothing to do
+            int keep = seed is { } sd ? Near(lab, w, h, sd) : 0;
+            if (keep == 0) for (int l = 1; l < sizes.Count; l++) if (keep == 0 || sizes[l] > sizes[keep]) keep = l;
+            var o = new float[m.Length];
+            for (int i = 0; i < m.Length; i++) o[i] = lab[i] == keep || lab[i] == 0 ? m[i] : 0;
+            return o;
+        }
+
+        /// <summary>Number each separate person outline in the mask (0 = background).</summary>
+        static (int[] lab, List<int> sizes) Label(float[] m, int w, int h)
         {
             var lab = new int[w * h];
             var sizes = new List<int> { 0 };
@@ -442,25 +449,61 @@ public sealed class Pipeline
                 }
                 sizes.Add(n);
             }
-            if (sizes.Count <= 2) return m;                     // one person (or nobody): nothing to do
-            int keep = 0;
-            if (seed is { } sd)
+            return (lab, sizes);
+        }
+
+        /// <summary>The outline under a point (0..1), or the nearest one within a short distance; 0 = none.</summary>
+        static int Near(int[] lab, int w, int h, (double x, double y) pt)
+        {
+            int sx = Math.Clamp((int)(pt.x * w), 0, w - 1), sy = Math.Clamp((int)(pt.y * h), 0, h - 1);
+            int r = Math.Max(2, w / 10), bestD = int.MaxValue, keep = 0;
+            for (int y = Math.Max(0, sy - r); y <= Math.Min(h - 1, sy + r); y++)
+                for (int x = Math.Max(0, sx - r); x <= Math.Min(w - 1, sx + r); x++)
+                {
+                    int l = lab[y * w + x]; if (l == 0) continue;
+                    int d = (x - sx) * (x - sx) + (y - sy) * (y - sy);
+                    if (d < bestD) { bestD = d; keep = l; }
+                }
+            return keep;
+        }
+
+        /// <summary>
+        /// "Only me" between face checks: follow the person outline you're in. The face finder only sees
+        /// fairly front-on faces, so turning your head used to stop the camera; now your face only has to
+        /// be seen now and then to confirm it's still you, and the outline carries it in between.
+        /// </summary>
+        void FollowMe(double now, float[]? m, int mw, int mh)
+        {
+            if (_me is { } f)
             {
-                // the outline under your face, or the nearest one within a short distance
-                int sx = Math.Clamp((int)(sd.x * w), 0, w - 1), sy = Math.Clamp((int)(sd.y * h), 0, h - 1);
-                int r = Math.Max(2, w / 10), bestD = int.MaxValue;
-                for (int y = Math.Max(0, sy - r); y <= Math.Min(h - 1, sy + r); y++)
-                    for (int x = Math.Max(0, sx - r); x <= Math.Min(w - 1, sx + r); x++)
-                    {
-                        int l = lab[y * w + x]; if (l == 0) continue;
-                        int d = (x - sx) * (x - sx) + (y - sy) * (y - sy);
-                        if (d < bestD) { bestD = d; keep = l; }
-                    }
+                _p.Body = (f.cx, f.top, f.bottom, 0.1, now); _p.FaceFound = true;
+                _track = (f.cx, f.cy); _trackAt = now;
+                return;
             }
-            if (keep == 0) for (int l = 1; l < sizes.Count; l++) if (keep == 0 || sizes[l] > sizes[keep]) keep = l;
-            var o = new float[m.Length];
-            for (int i = 0; i < m.Length; i++) o[i] = lab[i] == keep || lab[i] == 0 ? m[i] : 0;
-            return o;
+            if (m != null && _track is { } t && now - _trackAt < 2)
+            {
+                var (lab, _) = Label(m, mw, mh);
+                int id = Near(lab, mw, mh, t);
+                if (id != 0)
+                {
+                    // outline's box, and where its head is (middle of its top rows)
+                    int top = mh, bottom = -1, n = 0;
+                    for (int y = 0; y < mh; y++)
+                        for (int x = 0; x < mw; x++)
+                            if (lab[y * mw + x] == id) { n++; if (y < top) top = y; bottom = y; }
+                    int headRows = Math.Max(2, (bottom - top) / 8);
+                    long hx = 0; int hn = 0;
+                    for (int y = top; y <= Math.Min(bottom, top + headRows); y++)
+                        for (int x = 0; x < mw; x++)
+                            if (lab[y * mw + x] == id) { hx += x; hn++; }
+                    double cx = hn > 0 ? (hx / (double)hn + 0.5) / mw : t.x;
+                    double tp = (double)top / mh, bt = (bottom + 1.0) / mh;
+                    _p.Body = (cx, tp, bt, (double)n / (mw * mh), now); _p.FaceFound = true;
+                    _track = (cx, Math.Min(1, tp + headRows * 0.5 / mh + 0.04)); _trackAt = now;
+                    return;
+                }
+            }
+            _p.Body = (0.5, 0, 1, 0, now); _p.FaceFound = false;        // lost you: hold still
         }
 
         /// <summary>
@@ -507,13 +550,16 @@ public sealed class Pipeline
                             if (_p.RememberRequested) { _p.RememberRequested = false; _p.OnRemembered?.Invoke(null); }
                         }
                     }
-                    if (lockOn) FollowMe(now);
+                    if (lockOn && !_mask) FollowMe(now, null, 0, 0);
                     if (_mask)
                     {
                         _seg ??= new Segmenter(Path.Combine(here, "models", "selfie_segmenter.tflite"));
                         var (sr, sw, sh) = Nv12.SmallRgb(_buf, _w, _h, _zoom, 256);
                         var (m, mw, mh) = _seg.Mask(sr, sw, sh, (long)(now * 1000));
-                        Mask = (onlyMe ? KeepOne(m, mw, mh, now - _meAt < 3 ? (_lastFace.cx, _lastFace.cy) : null) : m, mw, mh);
+                        if (lockOn) FollowMe(now, m, mw, mh);
+                        // keep you clear in the blur: your face if just seen, else the outline being followed
+                        (double, double)? seed = now - _meAt < 3 ? (_lastFace.cx, _lastFace.cy) : now - _trackAt < 2 ? _track : null;
+                        Mask = (onlyMe ? KeepOne(m, mw, mh, seed) : m, mw, mh);
                         if (_presence)
                         {
                             var box = PersonBox(m, mw, mh);

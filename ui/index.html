@@ -274,6 +274,7 @@
     </div>
     <h2>Virtual camera</h2>
     <div class="card">
+      <div class="row"><div class="lbl">Camera driver<small id="vcamhelp">Checking...</small></div><button class="btn sm pri" id="vcaminst" style="display:none">Install</button></div>
       <div class="row"><div class="lbl">nocat.cam virtual camera<small>Pick "nocat.cam" in Discord. Gestures and effects need this on; off = Discord/OBS use the PIXY directly.</small></div><label class="tg"><input type="checkbox" data-key="virtual_cam"><span></span></label></div>
       <div class="row"><div class="lbl">Take from camera at</div><select data-key="capture_size"><option>3840x2160</option><option>2560x1440</option><option>1920x1080</option></select></div>
       <div class="row"><div class="lbl">Send to apps at<small>Discord sends at most 1080p (720p without Nitro), so 1080p is best for Discord. 4K is for OBS/recording; blur at 4K is heavy.</small></div><select data-key="vcam_size"><option>3840x2160</option><option>2560x1440</option><option>1920x1080</option><option>1280x720</option></select></div>
@@ -344,6 +345,16 @@ function bind() {
   $("#q-track").onchange = () => api().action("toggle_tracking");
   $("#q-sleep").onchange = () => api().action("toggle_sleep");
   $("#github").onclick = () => api().open_github();
+  const vcamText = { nocat: 'Installed. Apps list it as "nocat.cam".', obs: "Using OBS Studio's copy (installed with OBS). Nothing else needed.",
+    missing: 'Not installed yet: press Install once (Windows asks for admin). Then pick "nocat.cam" in Discord.', broken: "Its files are gone: press Install to put it back." };
+  const showVcam = st => { $("#vcamhelp").textContent = vcamText[st] || "Couldn't check."; $("#vcaminst").style.display = st === "missing" || st === "broken" ? "" : "none"; };
+  api().vcam_state().then(showVcam);
+  $("#vcaminst").onclick = async () => {
+    $("#vcamhelp").textContent = "Installing... (say yes to the Windows prompt)";
+    const st = await api().vcam_install();
+    showVcam(st || await api().vcam_state());
+    if (st) toast("Camera installed - restart Discord to see it");
+  };
   $("#chkupd").onclick = async () => {
     $("#updhelp").textContent = "Checking...";
     const u = await api().check_update();

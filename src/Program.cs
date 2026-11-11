@@ -7,6 +7,8 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        if (args.Length >= 1 && args[0] == "--install-vcam") { Environment.Exit(VcamDriver.InstallElevated()); return; }
+        if (args.Length >= 1 && args[0] == "--uninstall-vcam") { Environment.Exit(VcamDriver.UninstallElevated()); return; }
         if (args.Length >= 3 && args[0] == "--cpubench") { Environment.Exit(CpuBench.Run(args[1], args[2])); return; }
         if (args.Length >= 2 && args[0] == "--facetest") { Environment.Exit(FaceTest.Run(args[1])); return; }
         if (args.Length >= 2 && args[0] == "--selftest") { Environment.Exit(SelfTest.Run(args[1])); return; }
@@ -124,6 +126,7 @@ static class Program
         Log.Instance.Info($"nocat.cam {Application.ProductVersion.Split('+')[0]} started");
         if (firstRun || args.Contains("--settings")) { app.Cfg.Save(); ShowSettings(); }
         if (fromIdx >= 0) app.Say($"Updated to {Updater.Current}");
+        if (!VcamDriver.Ready) app.Say("One more step: open settings, General, and press Install next to Camera driver");
         Updater.StartAuto(app, ui);
 
         Application.Run();

@@ -67,12 +67,12 @@ Works with the PIXY 4K and the PIXY 2K. EMEET Studio isn't needed.
 
 ## Setup
 
-1. Install [OBS Studio](https://obsproject.com/) once. nocat.cam uses its virtual camera driver. OBS
-   itself doesn't need to run, and you shouldn't start OBS's own virtual camera while nocat.cam is on.
-2. Run `nocat.cam.exe`. It goes to the tray; click the icon for settings.
-3. Optional: right-click `tools\rename-vcam.ps1` → *Run with PowerShell* as admin, so apps list the camera as
-   **nocat.cam** instead of "OBS Virtual Camera". `-Undo` puts it back.
-4. In Discord (or anywhere), pick **nocat.cam** as your camera.
+1. Run `nocat.cam.exe`. It goes to the tray; click the icon for settings.
+2. The first time, open **General** and press **Install** next to *Camera driver* (Windows asks for admin once).
+   This sets up the **nocat.cam** virtual camera. OBS Studio isn't needed; if it's already installed, its
+   virtual camera is used instead and nothing extra is installed. Don't start OBS's own virtual camera while
+   nocat.cam is on.
+3. In Discord (or anywhere), pick **nocat.cam** as your camera.
 
 Settings live in `%APPDATA%\nocat.cam\config.json`, the log next to it. To move settings, drop a
 `config.json` next to the exe renamed to `import-config.json`; it's imported on the next start.
@@ -82,6 +82,7 @@ Settings live in `%APPDATA%\nocat.cam\config.json`, the log next to it. To move 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\get-mediapipe.ps1   # fetches libmediapipe.dll (68 MB) from PyPI
 powershell -ExecutionPolicy Bypass -File tools\get-turbojpeg.ps1   # fetches turbojpeg.dll from the official libjpeg-turbo release
+powershell -ExecutionPolicy Bypass -File tools\get-obs-vcam.ps1    # fetches OBS's virtual camera module (installed OBS or the OBS release zip)
 dotnet build -c Release
 dotnet publish -c Release -o publish
 ```
@@ -108,7 +109,10 @@ camera's HID interface (VID 328F, PID 00C0, report 0x09):
 - [libjpeg-turbo](https://libjpeg-turbo.org/) (BSD/IJG): `turbojpeg.dll`.
 - [HidSharp](https://www.zer7.com/software/hidsharp) (Apache 2.0),
   [Microsoft WebView2](https://developer.microsoft.com/microsoft-edge/webview2/).
-- The virtual camera driver is [OBS Studio](https://obsproject.com/)'s (GPL 2.0), used as installed; nocat.cam only writes pictures to it.
+- The virtual camera driver is [OBS Studio](https://obsproject.com/)'s virtual camera module (`obs-virtualcam-module64.dll` /
+  `obs-virtualcam-module32.dll` from OBS 32.1.2, GPL 2.0, unmodified; source at
+  [obsproject/obs-studio](https://github.com/obsproject/obs-studio/tree/32.1.2/plugins/win-dshow)). It ships in the
+  `vcam` folder and runs inside the apps that show the camera; nocat.cam only writes pictures to it.
 
 ## Licence
 

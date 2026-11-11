@@ -6,3 +6,4 @@ publish/
 native/libmediapipe.dll
 publish-zip/
 native/turbojpeg.dll
+native/obs-vcam/

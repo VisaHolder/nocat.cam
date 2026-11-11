@@ -180,6 +180,8 @@ public sealed class Bridge
             case "set_auto_privacy": return _app.Cam.SetAutoPrivacy((int)a[0]!.GetValue<double>());
             case "save_position": return JsonSerializer.SerializeToNode(_app.SavePosition(S(a, 0)));
             case "clear_position": c.Locked(() => c.positions.Remove(S(a, 0))); c.Save(); return true;
+            case "vcam_state": return VcamDriver.State();
+            case "vcam_install": return Task.Run(VcamDriver.Install).GetAwaiter().GetResult() ? VcamDriver.State() : null;
             case "check_update":
             {
                 var r = Task.Run(Updater.Latest).GetAwaiter().GetResult();
