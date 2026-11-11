@@ -217,7 +217,7 @@ public sealed class App : IDisposable
 
     void GoTo(double[] pos)
     {
-        if (pos.Length > 2) Cfg.zoom = pos[2];
+        if (Cfg.positions_zoom && pos.Length > 2) Cfg.zoom = pos[2];   // off by default: keep the zoom you're using
         Cam.GlideTo(pos[0], pos[1], Cfg.glide_s);
     }
 

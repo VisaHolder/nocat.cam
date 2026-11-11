@@ -25,6 +25,24 @@ static class SpeedTest
         using var tj = new TurboJpeg();
         foreach (var m in Capture.Modes("EMEET PIXY")) lines.Add("     mode " + m);
 
+        // does the camera's own tracking slow it down?
+        using (var cap = Capture.Open("EMEET PIXY", 1920, 1080, 60, out _))
+        using (var pixy = new Pixy())
+        {
+            if (cap != null)
+            {
+                var jb = new byte[1 << 20];
+                double Rate() { for (int i = 0; i < 10; i++) cap.Read(ref jb, false); int a0 = cap.Arrived; var w = Stopwatch.StartNew(); Thread.Sleep(4000); return (cap.Arrived - a0) / w.Elapsed.TotalSeconds; }
+                var before = pixy.GetMode();
+                pixy.SetMode(Pixy.Manual); Thread.Sleep(1500);
+                lines.Add($"     1080p60, tracking OFF: camera delivers {Rate():0.0} fps");
+                pixy.SetMode(Pixy.Tracking); Thread.Sleep(1500);
+                lines.Add($"     1080p60, camera tracking ON: camera delivers {Rate():0.0} fps");
+                if (before is Pixy.Manual or Pixy.Tracking) pixy.SetMode(before.Value);
+                Flush();
+            }
+        }
+
         // what's slowing the camera: auto-exposure priority (via the driver directly)
         using (var probe = Capture.Open("EMEET PIXY", 1920, 1080, 60, out var perr))
         {

@@ -15,6 +15,7 @@ public sealed class Config
     public int fps { get; set; } = 60;                 // 60 for 1080p and smaller (the camera slows itself in dim light), 30 for 1440p/4K
     public double zoom { get; set; } = 1.0;
     public double zoom_step { get; set; } = 0.1;
+    public bool positions_zoom { get; set; }           // going to a position also restores the zoom it was saved with
     public double glide_s { get; set; } = 1.5;
     public double nudge_deg { get; set; } = 5.0;
     public string bg_mode { get; set; } = "off";      // off | blur | image

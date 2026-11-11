@@ -184,8 +184,10 @@
 
   <!-- POSITIONS -->
   <section class="page" id="p-positions">
-    <h1>Positions</h1><p class="sub">Aim and zoom the camera, then save it to a slot. Going to a slot glides there and turns tracking off.</p>
+    <h1>Positions</h1><p class="sub">Aim the camera, then save it to a slot. Going to a slot glides there and turns tracking off.</p>
     <div class="pgrid" id="pgrid"></div>
+    <div class="card" style="margin-top:12px"><div class="row"><div class="lbl">Positions also restore zoom<small>Off: going to a position keeps the zoom you're using now. On: it switches to the zoom the position was saved with.</small></div>
+      <label class="tg"><input type="checkbox" data-key="positions_zoom"><span></span></label></div></div>
     <h2>After waking up</h2>
     <div class="card"><div class="row"><div class="lbl">Go to</div><select data-key="wake_to" id="wake_to"></select></div></div>
   </section>
