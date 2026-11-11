@@ -125,7 +125,8 @@ static class Program
 
         app.Start();
         Log.Instance.Info($"nocat.cam {Application.ProductVersion.Split('+')[0]} started");
-        if (firstRun || args.Contains("--settings")) { app.Cfg.Save(); ShowSettings(); }
+        // first start, or the camera driver isn't installed yet: open settings (it shows an Install banner)
+        if (firstRun || args.Contains("--settings") || !VcamDriver.Ready) { app.Cfg.Save(); ShowSettings(); }
         if (fromIdx >= 0) app.Say($"Updated to {Updater.Current}");
         if (!VcamDriver.Ready) app.Say("One more step: open settings, General, and press Install next to Camera driver");
         Updater.StartAuto(app, ui);

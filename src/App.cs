@@ -525,7 +525,9 @@ public sealed class App : IDisposable
         if (Asleep) return ("sleep", "asleep");
         var s = Video.Status;
         if (s == "watching") return ("ok", "watching for gestures");
-        if (s.Contains("in use") || s.Contains("busy") || s.Contains("not found") || s.StartsWith("couldn't")) return ("warn", s);
+        if (Cfg.virtual_cam && !VcamDriver.Ready) return ("warn", "camera driver not installed - see settings");
+        if (s.Contains("in use")) return ("warn", "another app has the camera - pick nocat.cam in it, not EMEET PIXY");
+        if (s.Contains("busy") || s.Contains("not found") || s.StartsWith("couldn't")) return ("warn", s);
         return ("idle", s);
     }
 

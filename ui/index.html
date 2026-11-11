@@ -126,6 +126,11 @@
   .ctl .side .r { display: flex; justify-content: space-between; align-items: center; }
 
   .note { color: var(--faint); font-size: 12px; margin: 10px 2px 0; }
+  .setup { display: none; align-items: center; gap: 14px; margin: 0 0 18px; padding: 14px 16px; border-radius: var(--r);
+    background: #2a1f0c; border: 1px solid #6b4a12; color: #f3d9a4; }
+  .setup.on { display: flex; }
+  .setup b { color: #ffe7b8; }
+  .setup .grow { flex: 1; font-size: 13px; line-height: 1.45; }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%) translateY(20px); opacity: 0;
     background: #222230; border: 1px solid #33334a; padding: 8px 14px; border-radius: 9px; transition: .2s; pointer-events: none; }
   .toast.on { opacity: 1; transform: translateX(-50%); }
@@ -150,6 +155,9 @@
 </aside>
 
 <main>
+  <div class="setup" id="setupbar"><div class="grow"><b>One more step:</b> install the nocat.cam camera so Discord and other apps can see it.
+    Windows asks for admin once. Then pick <b>nocat.cam</b> as your camera in Discord, not "EMEET PIXY".</div>
+    <button class="btn pri" id="setupinst">Install camera</button></div>
   <!-- CAMERA -->
   <section class="page on" id="p-control">
     <h1>Camera</h1><p class="sub">Quick controls. Everything saves as you change it.</p>
@@ -359,8 +367,14 @@ function bind() {
   $("#github").onclick = () => api().open_github();
   const vcamText = { nocat: 'Installed. Apps list it as "nocat.cam".', obs: "Using OBS Studio's copy (installed with OBS). Nothing else needed.",
     missing: 'Not installed yet: press Install once (Windows asks for admin). Then pick "nocat.cam" in Discord.', broken: "Its files are gone: press Install to put it back." };
-  const showVcam = st => { $("#vcamhelp").textContent = vcamText[st] || "Couldn't check."; $("#vcaminst").style.display = st === "missing" || st === "broken" ? "" : "none"; };
+  const showVcam = st => {
+    const need = st === "missing" || st === "broken";
+    $("#vcamhelp").textContent = vcamText[st] || "Couldn't check.";
+    $("#vcaminst").style.display = need ? "" : "none";
+    $("#setupbar").classList.toggle("on", need);
+  };
   api().vcam_state().then(showVcam);
+  $("#setupinst").onclick = () => $("#vcaminst").click();
   $("#vcaminst").onclick = async () => {
     $("#vcamhelp").textContent = "Installing... (say yes to the Windows prompt)";
     const st = await api().vcam_install();
