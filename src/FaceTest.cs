@@ -19,6 +19,16 @@ static class FaceTest
             lines.Add($"{(ok ? "PASS" : "FAIL")} keep only me in the blur mask");
         }
         string here = AppContext.BaseDirectory;
+        // a face-down camera can't see a face: lift it for the test, and put it back down afterwards
+        using var px = new Pixy();
+        bool wasDown = px.GetMode() == Pixy.Sleep;
+        if (wasDown) { px.SetMode(Pixy.Manual); Thread.Sleep(3000); lines.Add("     camera was face-down: lifted for the test"); }
+        try { return RunCamera(lines, here, outPath); }
+        finally { if (wasDown) px.SetMode(Pixy.Sleep); }
+    }
+
+    static int RunCamera(List<string> lines, string here, string outPath)
+    {
         using var cap = Capture.Open("EMEET PIXY", 1920, 1080, 30, out var why);
         if (cap == null) { File.WriteAllText(outPath, "FAIL camera: " + why); return 1; }
         using var tj = new TurboJpeg();

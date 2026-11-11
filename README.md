@@ -53,6 +53,7 @@ Works with the PIXY 4K and the PIXY 2K. EMEET Studio isn't needed.
   (camera stays on, apps see a "camera asleep" card, and a gesture can wake it). Optional auto-sleep
   when nobody is in view or no app is using nocat.cam, and auto-wake when an app starts using it. When no app is
   using nocat.cam the camera can go all the way down (privacy) even from a soft sleep, and comes back up when one does.
+  It also goes face-down when the PC shuts down, restarts or sleeps, and stays down until an app opens nocat.cam.
 - **Picture**: brightness, contrast, white balance, exposure, focus and more, plus a *Fixed exposure* switch for bright rooms
   (in dim rooms auto exposure slows the camera).
 - **Light on resources**: the camera's MJPEG pictures are read through DirectShow and decoded by libjpeg-turbo

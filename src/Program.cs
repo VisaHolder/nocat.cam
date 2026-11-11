@@ -132,6 +132,14 @@ static class Program
         if (app.Cfg.virtual_cam && !VcamDriver.Ready) app.Say("One more step: open settings, General, and press Install next to Camera driver");
         Updater.StartAuto(app, ui);
 
+        // PC shutting down / restarting / signing out / going to sleep: camera face-down first
+        Microsoft.Win32.SystemEvents.SessionEnding += (_, e) =>
+            app.PcGoingDown(e.Reason == Microsoft.Win32.SessionEndReasons.SystemShutdown ? "shutting down" : "signing out");
+        Microsoft.Win32.SystemEvents.PowerModeChanged += (_, e) =>
+        {
+            if (e.Mode == Microsoft.Win32.PowerModes.Suspend) app.PcGoingDown("going to sleep");
+        };
+
         Application.Run();
     }
 }

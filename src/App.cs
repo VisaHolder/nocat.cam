@@ -96,13 +96,23 @@ public sealed class App : IDisposable
 
     public void Start()
     {
+        // Check BEFORE the video starts: opening the camera's video wakes it up. If it's still face-down (the
+        // PC was shut down, or it slept before), stay down until an app opens nocat.cam, and put tracking back
+        // on when it wakes.
+        bool down = Cam.GetMode() == Pixy.Sleep;
+        if (down)
+        {
+            Mode = Pixy.Sleep; CamAsleep = true; AutoSlept = "unused";
+            _restoreTracking = Cfg.body_tracking && Cfg.track_style is "body" or "me";
+            _log.Info("camera is face-down: waiting for an app to use nocat.cam");
+        }
         Video.Start();
         Keys.Bind(Cfg.hotkeys);
         new Thread(PollMode) { IsBackground = true, Name = "mode" }.Start();
         new Thread(AutoLoop) { IsBackground = true, Name = "auto" }.Start();
         new Thread(BodyLoop) { IsBackground = true, Name = "body" }.Start();
         if (Cfg.fixed_exposure) ApplyExposure(true);
-        if (Cfg.body_tracking && Cfg.track_style is "body" or "me") Run("tracking", "was on before");
+        if (!down && Cfg.body_tracking && Cfg.track_style is "body" or "me") Run("tracking", "was on before");
     }
 
     bool ShouldWatch() => Cfg.gestures_enabled && !CamAsleep;   // in privacy mode it can't see you
@@ -160,6 +170,8 @@ public sealed class App : IDisposable
         {
             bool wasCamAsleep = Cam.GetMode() == Pixy.Sleep;
             SoftAsleep = false; AutoSlept = null;
+            if (_restoreTracking && c.wake_to == "stay") { _restoreTracking = false; StartTracking(); return; }
+            _restoreTracking = false;
             if (c.wake_to == "tracking") StartTracking();
             else if (c.positions.TryGetValue(c.wake_to, out var pos))
             {
@@ -519,6 +531,25 @@ public sealed class App : IDisposable
             if (value) k.SetValue("nocat.cam", $"\"{Environment.ProcessPath}\"");
             else k.DeleteValue("nocat.cam", false);
         }
+    }
+
+    bool _restoreTracking;
+
+    /// <summary>
+    /// The PC is shutting down, restarting, signing out or going to sleep: turn the camera face-down first
+    /// (it stays powered by USB otherwise). It comes back up when an app next opens nocat.cam.
+    /// </summary>
+    public void PcGoingDown(string why)
+    {
+        bool locked = Monitor.TryEnter(_doLock, 2000);
+        try
+        {
+            bool ok = Cam.SetMode(Pixy.Sleep);
+            if (ok) { CamAsleep = true; SoftAsleep = false; AutoSlept = "unused"; }
+            _log.Info($"PC {why}: camera face-down{(ok ? "" : " FAILED")}");
+        }
+        catch (Exception e) { _log.Info($"PC {why}: camera face-down failed: {e.Message}"); }
+        finally { if (locked) Monitor.Exit(_doLock); }
     }
 
     public void Dispose()
