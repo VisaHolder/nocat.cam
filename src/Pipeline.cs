@@ -245,8 +245,8 @@ public sealed class Pipeline
                         var m = _ai.Mask;
                         if (bg != "off" && m.mask != null)
                         {
-                            Nv12? back = bg == "blur" ? Nv12.Blurred(outFrame!, c.bg_blur) : Picture(c.bg_image, outFrame!.W, outFrame.H);
-                            if (back != null) Nv12.Blend(outFrame!, back, m.mask, m.w, m.h);
+                            if (bg == "blur") Nv12.BlendBlur(outFrame!, Nv12.Blurred(outFrame!, c.bg_blur), m.mask, m.w, m.h);
+                            else if (Picture(c.bg_image, outFrame!.W, outFrame.H) is { } back) Nv12.Blend(outFrame!, back, m.mask, m.w, m.h);
                         }
                         vcam!.Send(outFrame!.Data);
                     }
@@ -374,7 +374,7 @@ public sealed class Pipeline
                 double look = FaceId.MatchScore(f.Print, me);
                 // a face that looks more like someone it has learned isn't you, however close it is
                 if (others.Count > 0 && FaceId.MatchScore(f.Print, others) >= look) { scores.Add(look); continue; }
-                double need = near < 0.12 && now - _meAt < 1 ? c.face_match - 0.25 : c.face_match;
+                double need = near < 0.12 && now - _meAt < 1 ? c.face_match - 0.1 : c.face_match;
                 double score = look - need - 0.1 * near;
                 if (look >= need && (best == null || score > bestScore)) { bestScore = score; best = f; }
                 scores.Add(look);

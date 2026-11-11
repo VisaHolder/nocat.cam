@@ -15,6 +15,17 @@ public sealed class Nv12
 
     public static int Even(double v) => Math.Max(2, (int)v / 2 * 2);
 
+    /// <summary>
+    /// Run body(y) for every row, in at most 4 big chunks. Many tiny parallel jobs per picture kept a
+    /// dozen threads awake and spinning (about 2 cores at 30 fps); a few big ones cost almost nothing extra.
+    /// </summary>
+    public static void Rows(int h, Action<int> body)
+    {
+        int parts = Math.Clamp(h / 64, 1, 4);
+        if (parts == 1) { for (int y = 0; y < h; y++) body(y); return; }
+        Parallel.For(0, parts, p => { int a = p * h / parts, b = (p + 1) * h / parts; for (int y = a; y < b; y++) body(y); });
+    }
+
     /// <summary>Crop a centred zoom window out of src (frame w x h) and scale it into dst.</summary>
     public static void ZoomInto(byte[] src, int w, int h, double zoom, Nv12 dst)
     {
@@ -43,7 +54,7 @@ public sealed class Nv12
         if (cw % dw == 0 && ch % dh == 0 && cw / dw == ch / dh)
         {
             int k = cw / dw, area = k * k;
-            Parallel.For(0, dh, y =>
+            Rows(dh, y =>
             {
                 int drow = dstOffset + y * dw * channels;
                 for (int x = 0; x < dw; x++)
@@ -61,24 +72,38 @@ public sealed class Nv12
             return;
         }
         double fx = (double)cw / dw, fy = (double)ch / dh;
-        Parallel.For(0, dh, y =>
+        // per output column: the two source columns and the weight between them (worked out once, not per row)
+        var ia = new int[dw]; var ib = new int[dw]; var wxs = new int[dw];
+        for (int x = 0; x < dw; x++)
+        {
+            double sx = Math.Max(0, (x + 0.5) * fx - 0.5);
+            int xa = Math.Min((int)sx, cw - 1), xb = Math.Min(xa + 1, cw - 1);
+            ia[x] = (x0 + xa) * channels; ib[x] = (x0 + xb) * channels; wxs[x] = (int)((sx - xa) * 256);
+        }
+        Rows(dh, y =>
         {
             double sy = Math.Max(0, (y + 0.5) * fy - 0.5);
             int ya = Math.Min((int)sy, ch - 1), yb = Math.Min(ya + 1, ch - 1);
-            int wy = (int)((sy - ya) * 256);
+            int wy = (int)((sy - ya) * 256), wy1 = 256 - wy;
             int ra = srcOffset + (y0 + ya) * sStride, rb = srcOffset + (y0 + yb) * sStride;
             int drow = dstOffset + y * dw * channels;
-            for (int x = 0; x < dw; x++)
+            if (channels == 1)
             {
-                double sx = Math.Max(0, (x + 0.5) * fx - 0.5);
-                int xa = Math.Min((int)sx, cw - 1), xb = Math.Min(xa + 1, cw - 1);
-                int wx = (int)((sx - xa) * 256);
-                int ia = (x0 + xa) * channels, ib = (x0 + xb) * channels;
-                for (int c = 0; c < channels; c++)
+                for (int x = 0; x < dw; x++)
                 {
-                    int top = src[ra + ia + c] * (256 - wx) + src[ra + ib + c] * wx;
-                    int bot = src[rb + ia + c] * (256 - wx) + src[rb + ib + c] * wx;
-                    dst[drow + x * channels + c] = (byte)((top * (256 - wy) + bot * wy + 32768) >> 16);
+                    int wx = wxs[x], wx1 = 256 - wx, a = ia[x], b = ib[x];
+                    int top = src[ra + a] * wx1 + src[ra + b] * wx;
+                    int bot = src[rb + a] * wx1 + src[rb + b] * wx;
+                    dst[drow + x] = (byte)((top * wy1 + bot * wy + 32768) >> 16);
+                }
+            }
+            else
+            {
+                for (int x = 0; x < dw; x++)
+                {
+                    int wx = wxs[x], wx1 = 256 - wx, a = ia[x], b = ib[x], o = drow + x * 2;
+                    dst[o] = (byte)(((src[ra + a] * wx1 + src[ra + b] * wx) * wy1 + (src[rb + a] * wx1 + src[rb + b] * wx) * wy + 32768) >> 16);
+                    dst[o + 1] = (byte)(((src[ra + a + 1] * wx1 + src[ra + b + 1] * wx) * wy1 + (src[rb + a + 1] * wx1 + src[rb + b + 1] * wx) * wy + 32768) >> 16);
                 }
             }
         });
@@ -99,7 +124,7 @@ public sealed class Nv12
         var rgb = new byte[f.W * f.H * 3];
         var d = f.Data;
         int w = f.W, h = f.H, uvBase = w * h;
-        Parallel.For(0, h, y =>
+        Rows(h, y =>
         {
             int yr = y * w, uvr = uvBase + (y / 2) * w, o = y * w * 3;
             for (int x = 0; x < w; x++)
@@ -120,7 +145,7 @@ public sealed class Nv12
         var f = new Nv12(w, h);
         var d = f.Data;
         int uvBase = w * h;
-        Parallel.For(0, h, y =>
+        Rows(h, y =>
         {
             for (int x = 0; x < w; x++)
             {
@@ -141,6 +166,7 @@ public sealed class Nv12
     static byte Clamp(int v) => (byte)(v < 0 ? 0 : v > 255 ? 255 : v);
 
     /// <summary>Blurred copy of a frame: shrink by k, blur, grow back.</summary>
+    /// <summary>A small, blurred copy of the picture (about 1/(2+2*strength) size); see BlendBlur.</summary>
     public static Nv12 Blurred(Nv12 f, int strength)
     {
         int k = 2 + strength * 2;
@@ -149,10 +175,69 @@ public sealed class Nv12
         Scale(f.Data, f.W, 0, 0, f.W / 2, f.H / 2, 2, small.Data, small.W * small.H, small.W / 2, small.H / 2, f.W * f.H);
         BoxBlur(small.Data, 0, small.W, small.H, 1, 2);
         BoxBlur(small.Data, small.W * small.H, small.W / 2, small.H / 2, 2, 1);
-        var big = new Nv12(f.W, f.H);
-        Scale(small.Data, small.W, 0, 0, small.W, small.H, 1, big.Data, 0, f.W, f.H);
-        Scale(small.Data, small.W, 0, 0, small.W / 2, small.H / 2, 2, big.Data, f.W * f.H, f.W / 2, f.H / 2, small.W * small.H);
-        return big;
+        return small;
+    }
+
+    /// <summary>
+    /// Background blur in one pass: where the mask says "background", mix in the small blurred picture
+    /// (from <see cref="Blurred"/>), enlarged on the fly. No full-size blurred copy is ever made, and
+    /// pixels that are all person are skipped.
+    /// </summary>
+    public static void BlendBlur(Nv12 f, Nv12 small, float[] mask, int mw, int mh)
+    {
+        var m = SoftEdge(mask, mw, mh);
+        int w = f.W, h = f.H, uvBase = w * h, sw = small.W, sh = small.H, suvBase = sw * sh;
+        var d = f.Data; var s = small.Data;
+        var xa = new int[w]; var xb = new int[w]; var wxs = new int[w];
+        var bxa = new int[w]; var bxb = new int[w]; var bwx = new int[w];      // small-picture columns (brightness)
+        var cxa = new int[w]; var cxb = new int[w]; var cwx = new int[w];      // small-picture colour pairs
+        for (int x = 0; x < w; x++)
+        {
+            float mx = (x + 0.5f) * mw / w - 0.5f;
+            int a = Math.Clamp((int)mx, 0, mw - 1);
+            xa[x] = a; xb[x] = Math.Min(a + 1, mw - 1); wxs[x] = (int)(Math.Clamp(mx - a, 0, 1) * 256);
+            float sx = Math.Max(0, (x + 0.5f) * sw / w - 0.5f);
+            int q = Math.Min((int)sx, sw - 1);
+            bxa[x] = q; bxb[x] = Math.Min(q + 1, sw - 1); bwx[x] = (int)((sx - q) * 256);
+            float ux = Math.Max(0, (x / 2 + 0.5f) * (sw / 2) / (w / 2) - 0.5f);
+            int u = Math.Min((int)ux, sw / 2 - 1);
+            cxa[x] = u * 2; cxb[x] = Math.Min(u + 1, sw / 2 - 1) * 2; cwx[x] = (int)((ux - u) * 256);
+        }
+        Rows(h, y =>
+        {
+            float my = (y + 0.5f) * mh / h - 0.5f;
+            int ya = Math.Clamp((int)my, 0, mh - 1), yb = Math.Min(ya + 1, mh - 1);
+            float wy = Math.Clamp(my - ya, 0, 1);
+            Span<int> row = stackalloc int[mw];
+            for (int i = 0; i < mw; i++) row[i] = (int)((m[ya * mw + i] * (1 - wy) + m[yb * mw + i] * wy) * 256 + 0.5f);
+            float sy = Math.Max(0, (y + 0.5f) * sh / h - 0.5f);
+            int s0 = Math.Min((int)sy, sh - 1), s1 = Math.Min(s0 + 1, sh - 1), swy = (int)((sy - s0) * 256);
+            int r0 = s0 * sw, r1 = s1 * sw;
+            float uy = Math.Max(0, (y / 2 + 0.5f) * (sh / 2) / (h / 2) - 0.5f);
+            int u0 = Math.Min((int)uy, sh / 2 - 1), u1 = Math.Min(u0 + 1, sh / 2 - 1), uwy = (int)((uy - u0) * 256);
+            int c0 = suvBase + u0 * sw, c1 = suvBase + u1 * sw;
+            int yr = y * w, uvr = uvBase + (y / 2) * w;
+            bool uvRow = (y & 1) == 0;
+            for (int x = 0; x < w; x++)
+            {
+                int wx = wxs[x];
+                int a = (row[xa[x]] * (256 - wx) + row[xb[x]] * wx + 128) >> 8;
+                if (a >= 256) continue;                                           // all person
+                int a1 = 256 - a;
+                int p = bxa[x], q = bxb[x], k = bwx[x];
+                int bgY = ((s[r0 + p] * (256 - k) + s[r0 + q] * k) * (256 - swy) + (s[r1 + p] * (256 - k) + s[r1 + q] * k) * swy + 32768) >> 16;
+                int i = yr + x;
+                d[i] = (byte)((d[i] * a + bgY * a1 + 128) >> 8);
+                if (uvRow && (x & 1) == 0)
+                {
+                    int ca = cxa[x], cb = cxb[x], ck = cwx[x], o = uvr + x;
+                    int bu = ((s[c0 + ca] * (256 - ck) + s[c0 + cb] * ck) * (256 - uwy) + (s[c1 + ca] * (256 - ck) + s[c1 + cb] * ck) * uwy + 32768) >> 16;
+                    int bv = ((s[c0 + ca + 1] * (256 - ck) + s[c0 + cb + 1] * ck) * (256 - uwy) + (s[c1 + ca + 1] * (256 - ck) + s[c1 + cb + 1] * ck) * uwy + 32768) >> 16;
+                    d[o] = (byte)((d[o] * a + bu * a1 + 128) >> 8);
+                    d[o + 1] = (byte)((d[o + 1] * a + bv * a1 + 128) >> 8);
+                }
+            }
+        });
     }
 
     static void BoxBlur(byte[] d, int off, int w, int h, int ch, int r)
@@ -161,7 +246,7 @@ public sealed class Nv12
         for (int pass = 0; pass < 2; pass++)
         {
             bool horiz = pass == 0;
-            Parallel.For(0, horiz ? h : w, a =>
+            Rows(horiz ? h : w, a =>
             {
                 int len = horiz ? w : h;
                 for (int c = 0; c < ch; c++)
@@ -181,27 +266,37 @@ public sealed class Nv12
     public static void Blend(Nv12 f, Nv12 bg, float[] mask, int mw, int mh)
     {
         var m = SoftEdge(mask, mw, mh);
-        int w = f.W, h = f.H;
+        int w = f.W, h = f.H, uvBase = w * h;
         var d = f.Data; var b = bg.Data;
-        Parallel.For(0, h, y =>
+        var xa = new int[w]; var xb = new int[w]; var wxs = new int[w];
+        for (int x = 0; x < w; x++)
+        {
+            float mx = (x + 0.5f) * mw / w - 0.5f;
+            int a = Math.Clamp((int)mx, 0, mw - 1);
+            xa[x] = a; xb[x] = Math.Min(a + 1, mw - 1); wxs[x] = (int)(Math.Clamp(mx - a, 0, 1) * 256);
+        }
+        Rows(h, y =>
         {
             float my = (y + 0.5f) * mh / h - 0.5f;
             int ya = Math.Clamp((int)my, 0, mh - 1), yb = Math.Min(ya + 1, mh - 1);
             float wy = Math.Clamp(my - ya, 0, 1);
+            // this row of the mask, blended between its two nearest mask rows, as 0..256
+            Span<int> row = stackalloc int[mw];
+            for (int i = 0; i < mw; i++) row[i] = (int)((m[ya * mw + i] * (1 - wy) + m[yb * mw + i] * wy) * 256 + 0.5f);
+            int yr = y * w, uvr = uvBase + (y / 2) * w;
+            bool uvRow = (y & 1) == 0;
             for (int x = 0; x < w; x++)
             {
-                float mx = (x + 0.5f) * mw / w - 0.5f;
-                int xa = Math.Clamp((int)mx, 0, mw - 1), xb = Math.Min(xa + 1, mw - 1);
-                float wx = Math.Clamp(mx - xa, 0, 1);
-                float a = (m[ya * mw + xa] * (1 - wx) + m[ya * mw + xb] * wx) * (1 - wy)
-                        + (m[yb * mw + xa] * (1 - wx) + m[yb * mw + xb] * wx) * wy;
-                int i = y * w + x;
-                d[i] = (byte)(d[i] * a + b[i] * (1 - a) + 0.5f);
-                if ((y & 1) == 0 && (x & 1) == 0)
+                int wx = wxs[x];
+                int a = (row[xa[x]] * (256 - wx) + row[xb[x]] * wx + 128) >> 8;      // 256 = person, 0 = background
+                if (a >= 256) continue;                                             // all person: leave as is
+                int i = yr + x, a1 = 256 - a;
+                d[i] = (byte)((d[i] * a + b[i] * a1 + 128) >> 8);
+                if (uvRow && (x & 1) == 0)
                 {
-                    int o = w * h + (y / 2) * w + x;
-                    d[o] = (byte)(d[o] * a + b[o] * (1 - a) + 0.5f);
-                    d[o + 1] = (byte)(d[o + 1] * a + b[o + 1] * (1 - a) + 0.5f);
+                    int o = uvr + x;
+                    d[o] = (byte)((d[o] * a + b[o] * a1 + 128) >> 8);
+                    d[o + 1] = (byte)((d[o + 1] * a + b[o + 1] * a1 + 128) >> 8);
                 }
             }
         });

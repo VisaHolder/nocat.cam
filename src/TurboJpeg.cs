@@ -89,7 +89,7 @@ public sealed unsafe class TurboJpeg : IDisposable
             if (samp == SampGray) { d.AsSpan(uvBase, uw * uh * 2).Fill(128); return; }
             var cb = _cb; var cr = _cr;
             int xs = Math.Max(1, (w + cw - 1) / Math.Max(1, cw)), ys = Math.Max(1, (h + ch - 1) / Math.Max(1, ch));
-            Parallel.For(0, uh, y =>
+            Nv12.Rows(uh, y =>
             {
                 int sy = Math.Min(ch - 1, y * 2 / ys);
                 int srow = sy * cw, drow = uvBase + y * uw * 2;

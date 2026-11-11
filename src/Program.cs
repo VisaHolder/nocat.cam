@@ -7,6 +7,7 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        if (args.Length >= 3 && args[0] == "--cpubench") { Environment.Exit(CpuBench.Run(args[1], args[2])); return; }
         if (args.Length >= 2 && args[0] == "--facetest") { Environment.Exit(FaceTest.Run(args[1])); return; }
         if (args.Length >= 2 && args[0] == "--selftest") { Environment.Exit(SelfTest.Run(args[1])); return; }
         if (args.Length >= 2 && args[0] == "--speedtest")

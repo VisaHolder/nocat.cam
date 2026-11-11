@@ -26,7 +26,9 @@ public sealed class Config
     public string track_style { get; set; } = "camera";   // camera = PIXY's own | body = anyone's whole body | me = only your saved face
     public List<float[]> me_faces { get; set; } = new();     // fingerprints of your face for "only me"
     public List<float[]> not_me_faces { get; set; } = new(); // other people's faces, learned when seen next to you
-    public double face_match { get; set; } = 0.75;
+    // How alike a face must be to count as you. Measured on reap's PC: you score 0.6-0.76 against your
+    // saved looks, other people about 0.2. Not saved in the config, so a better value always applies.
+    [System.Text.Json.Serialization.JsonIgnore] public double face_match => 0.5;
     public bool bg_only_me { get; set; } = true;
     public bool gestures_only_me { get; set; } = true;      // with a saved face: only your hands count            // with a saved face: blur everyone except you
     public bool auto_update { get; set; } = true;           // install new versions from GitHub (only while no app is using nocat.cam)           // how alike a face must be to count as you

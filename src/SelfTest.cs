@@ -119,7 +119,7 @@ static class SelfTest
                         Nv12.ZoomInto(f.Data, f.W, f.H, 1, outF);
                         (mrgb, mw2, mh2) = Nv12.SmallRgb(f.Data, f.W, f.H, 1, 256);
                         var (m, a, b) = seg2.Mask(mrgb, mw2, mh2, 1000 + nb);
-                        Nv12.Blend(outF, Nv12.Blurred(outF, 6), m, a, b);
+                        Nv12.BlendBlur(outF, Nv12.Blurred(outF, 6), m, a, b);
                         vc.Send(outF.Data); nb++;
                     }
                     Check("background blur keeps up with the camera", nb / t2.Elapsed.TotalSeconds >= camRate * 0.9, $"{nb / t2.Elapsed.TotalSeconds:0.0} fps, camera gives {camRate:0.0}");
