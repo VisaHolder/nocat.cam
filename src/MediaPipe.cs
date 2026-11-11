@@ -149,8 +149,11 @@ public sealed unsafe class GestureRecognizer : IDisposable
         _h = h;
     }
 
-    /// <summary>Returns (best gesture name or null, its score, whether any hand was seen).</summary>
-    public (string? name, float score, bool hand) Recognize(byte[] rgb, int w, int h, long tsMs)
+    // MpNormalizedLandmark: x, y, z floats, then has_visibility/visibility/has_presence/presence, then name (40 bytes)
+    const int LandmarkSize = 40;
+
+    /// <summary>Returns (best gesture name or null, its score, whether any hand was seen, where that hand is (0..1)).</summary>
+    public (string? name, float score, bool hand, (double x, double y)? at) Recognize(byte[] rgb, int w, int h, long tsMs)
     {
         tsMs = Math.Max(tsMs, _lastTs + 1); _lastTs = tsMs;
         nint img = Mp.Image(rgb, w, h), err = 0;
@@ -161,20 +164,37 @@ public sealed unsafe class GestureRecognizer : IDisposable
             try
             {
                 bool hand = r.hand_landmarks_count > 0;
-                string? best = null; float bestScore = 0;
+                string? best = null; float bestScore = 0; (double, double)? at = null;
                 for (int i = 0; i < r.gestures_count; i++)
                 {
                     var cats = r.gestures[i];
                     if (cats.count == 0) continue;
                     var c = cats.categories[0];
                     var name = Marshal.PtrToStringUTF8(c.category_name);
-                    if (name != null && Gestures.Names.ContainsKey(name) && c.score > bestScore) { best = name; bestScore = c.score; }
+                    if (name != null && Gestures.Names.ContainsKey(name) && c.score > bestScore)
+                    {
+                        best = name; bestScore = c.score;
+                        at = i < r.hand_landmarks_count ? Centre(r.hand_landmarks[i]) : null;
+                    }
                 }
-                return (best, bestScore, hand);
+                return (best, bestScore, hand, at);
             }
             finally { Mp.MpGestureRecognizerCloseResult(&r); }
         }
         finally { Mp.MpImageFree(img); }
+    }
+
+    /// <summary>Middle of a hand: average of its points.</summary>
+    static (double, double)? Centre(Mp.Landmarks l)
+    {
+        if (l.count == 0 || l.landmarks == 0) return null;
+        double sx = 0, sy = 0;
+        for (int k = 0; k < l.count; k++)
+        {
+            var p = (float*)((byte*)l.landmarks + k * LandmarkSize);
+            sx += p[0]; sy += p[1];
+        }
+        return (sx / l.count, sy / l.count);
     }
 
     public void Dispose()

@@ -27,7 +27,8 @@ public sealed class Config
     public List<float[]> me_faces { get; set; } = new();     // fingerprints of your face for "only me"
     public List<float[]> not_me_faces { get; set; } = new(); // other people's faces, learned when seen next to you
     public double face_match { get; set; } = 0.75;
-    public bool bg_only_me { get; set; } = true;            // with a saved face: blur everyone except you
+    public bool bg_only_me { get; set; } = true;
+    public bool gestures_only_me { get; set; } = true;      // with a saved face: only your hands count            // with a saved face: blur everyone except you
     public bool auto_update { get; set; } = true;           // install new versions from GitHub (only while no app is using nocat.cam)           // how alike a face must be to count as you
     public string wake_to { get; set; } = "stay";
     public double auto_sleep_away_min { get; set; }

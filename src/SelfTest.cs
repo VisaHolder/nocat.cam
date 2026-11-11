@@ -78,7 +78,7 @@ static class SelfTest
                 {
                     var t = Stopwatch.StartNew();
                     var r = rec.Recognize(rgb, rw, rh, 1);
-                    Check("gesture model runs", true, $"{t.ElapsedMilliseconds} ms, hand seen: {r.hand}, sign: {r.name ?? "none"}");
+                    Check("gesture model runs", true, $"{t.ElapsedMilliseconds} ms, hand seen: {r.hand}, sign: {r.name ?? "none"}{(r.at is { } ha ? $" at {ha.x:0.00},{ha.y:0.00}" : "")}");
                 }
                 using (var seg = new Segmenter(Path.Combine(here, "models", "selfie_segmenter.tflite")))
                 {

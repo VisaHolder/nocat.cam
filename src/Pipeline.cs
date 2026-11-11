@@ -329,6 +329,8 @@ public sealed class Pipeline
 
         (double cx, double cy, double top, double bottom)? _me;
         double _meAt = -10, _meChecked = -10, _faceRetryAt, _scoreLogAt, _learnAt = -10;
+        List<(double cx, double cy, double w, bool me)> _seenFaces = new();
+        double _ignoredLogAt;
 
         /// <summary>
         /// Find your face among all faces (and handle "remember me"). Your face is the one that looks like
@@ -362,7 +364,7 @@ public sealed class Pipeline
             }
 
             var (me, others) = c.Locked(() => (c.me_faces.ToList(), c.not_me_faces.ToList()));
-            if (me.Count == 0) { _me = null; return; }
+            if (me.Count == 0) { _me = null; _seenFaces = new(); return; }
             FaceId.Face? best = null; double bestScore = 0;
             var scores = new List<double>();
             foreach (var f in faces)
@@ -397,6 +399,8 @@ public sealed class Pipeline
                     break;
                 }
             }
+            _seenFaces = faces.Select(f => ((f.X + f.W / 2.0) / rw, (f.Y + f.H / 2.0) / rh, (double)f.W / rw,
+                                            best is { } bb && ReferenceEquals(f.Print, bb.Print))).ToList();
             if (best is { } b)
             {
                 _lastFace = ((b.X + b.W / 2.0) / rw, (b.Y + b.H / 2.0) / rh);
@@ -459,6 +463,24 @@ public sealed class Pipeline
             return o;
         }
 
+        /// <summary>
+        /// With your face saved, a hand sign only counts if the face nearest the hand is yours. Nobody's face
+        /// matching you (or no face seen) = not yours either.
+        /// </summary>
+        bool MyHand(Config c, double now, (double x, double y)? hand)
+        {
+            if (!c.gestures_only_me || c.Locked(() => c.me_faces.Count) == 0) return true;
+            if (hand is not { } h) return false;
+            if (now - _meChecked > 0.3 && now >= _faceRetryAt)
+            {
+                try { FindMe(c, now); } catch (Exception e) { Log.Instance.Info("face check failed: " + e.Message); _faceRetryAt = now + 30; return false; }
+            }
+            if (_seenFaces.Count == 0) return false;
+            // nearest face, measured in face widths; hands sit beside or below a face, so up/down counts half
+            var nearest = _seenFaces.MinBy(f => Math.Sqrt((h.x - f.cx) * (h.x - f.cx) + 0.25 * (h.y - f.cy) * (h.y - f.cy)) / Math.Max(0.02, f.w));
+            return nearest.me;
+        }
+
         void Run()
         {
             string here = AppContext.BaseDirectory;
@@ -503,9 +525,20 @@ public sealed class Pipeline
                     {
                         _rec ??= new GestureRecognizer(Path.Combine(here, "models", "gesture_recognizer.task"));
                         var (rgb, rw, rh) = Nv12.SmallRgb(_buf, _w, _h, _zoom);
-                        var (name, score, hand) = _rec.Recognize(rgb, rw, rh, (long)(now * 1000));
+                        var (name, score, hand, handAt) = _rec.Recognize(rgb, rw, rh, (long)(now * 1000));
                         if (hand) _p.LastPerson = now;
                         string? seen = name != null && score >= c.min_score ? name : null;
+                        if (seen != null && !MyHand(c, now, handAt))
+                        {
+                            // someone else's hand (logged now and then, to check it's working)
+                            if (now - _ignoredLogAt > 5)
+                            {
+                                _ignoredLogAt = now;
+                                Log.Instance.Info($"ignored {seen} from a hand that isn't yours (hand {(handAt is { } ha ? $"{ha.x:0.00},{ha.y:0.00}" : "?")}, faces " +
+                                    string.Join(" ", _seenFaces.Select(f => $"{f.cx:0.00},{f.cy:0.00}{(f.me ? " (you)" : "")}")) + ")");
+                            }
+                            seen = null;
+                        }
                         if (seen == null) { _held = null; _needRelease = false; }
                         else if (!_needRelease && now >= _cooldownUntil)
                         {
