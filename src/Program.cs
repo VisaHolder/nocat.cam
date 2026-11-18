@@ -114,6 +114,19 @@ static class Program
         new Thread(() => { while (show.WaitOne()) ui.BeginInvoke(ShowSettings); }) { IsBackground = true }.Start();
 
         // a "take-screenshots" file next to the exe = save pictures of every settings page into .\shots
+        // test hook: a "run-action" file next to the exe runs the action written in it (like a tray click)
+        var actWatch = new FileSystemWatcher(AppContext.BaseDirectory, "run-action") { EnableRaisingEvents = true };
+        actWatch.Created += (_, _) =>
+        {
+            try
+            {
+                Thread.Sleep(200);
+                var f = Path.Combine(AppContext.BaseDirectory, "run-action");
+                var act = File.ReadAllText(f).Trim(); File.Delete(f);
+                if (Actions.All.ContainsKey(act) && act != "keys") app.Run(act);
+            }
+            catch { }
+        };
         var shotWatch = new FileSystemWatcher(AppContext.BaseDirectory, "take-screenshots") { EnableRaisingEvents = true };
         shotWatch.Created += (_, _) => ui.BeginInvoke(async () =>
         {

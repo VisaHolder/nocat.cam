@@ -160,7 +160,9 @@ public sealed class App : IDisposable
             if (Asleep) return;
             var m = Cam.GetMode();
             _modeBeforeSleep = m is Pixy.Manual or Pixy.Tracking ? m.Value : Pixy.Manual;
-            string style = why == "unused" ? "privacy" : c.sleep_style;   // nobody is watching: no point in a card
+            // no app is showing nocat.cam: nobody would see the "asleep" card, so go all the way down
+            bool nobodyWatching = c.virtual_cam && !Video.HasReaders;
+            string style = why == "unused" || (nobodyWatching && why != "away") ? "privacy" : c.sleep_style;
             if (style == "soft" || why == "away") SoftAsleep = true;   // away: stay soft to see you come back
             else if (Cam.SetMode(Pixy.Sleep)) CamAsleep = true;
             AutoSlept = why;
@@ -460,7 +462,7 @@ public sealed class App : IDisposable
     /// <summary>Sleep when you've walked away or nothing uses nocat.cam; wake when that changes.</summary>
     void AutoLoop()
     {
-        double unusedSince = Now;
+        double unusedSince = Now, softAlone = -1;
         var seen = new Dictionary<int, double>();          // app -> when it last used nocat.cam
         HashSet<int>? atSleep = null;                      // apps that were using it when it went to sleep
         while (!_quit)
@@ -493,6 +495,13 @@ public sealed class App : IDisposable
                 { Do("wake", "an app started using nocat.cam"); continue; }
                 bool unused = c.auto_sleep_unused_min > 0 && users != null && now - Math.Max(unusedSince, Math.Max(_lastActivity, Video.OpenedAt)) > c.auto_sleep_unused_min * 60;
                 if (unused && SoftAsleep && !CamAsleep) { Do("sleep", "unused"); continue; }
+                // soft asleep and the last app stopped showing nocat.cam: face-down after 30 s (no card to show anyone)
+                if (SoftAsleep && !CamAsleep && AutoSlept != "away" && users is { Count: 0 })
+                {
+                    if (softAlone < 0) softAlone = now;
+                    else if (now - softAlone > 30) { softAlone = -1; Do("sleep", "unused"); continue; }
+                }
+                else softAlone = -1;
                 if (Asleep) continue;
 
                 // timers count from the latest of: last seen / last used, your last action, camera (re)opened
